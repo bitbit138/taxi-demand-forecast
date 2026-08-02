@@ -1,0 +1,14 @@
+# Normalise line endings so Windows/other checkouts don't produce whole-file diffs.
+* text=auto eol=lf
+
+# Binary — never touch these.
+*.parquet binary
+*.zip     binary
+*.pdf     binary
+*.docx    binary
+*.pptx    binary
+*.exe     binary
+*.dll     binary
+*.shp     binary
+*.shx     binary
+*.dbf     binary

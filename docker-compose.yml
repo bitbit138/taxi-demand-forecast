@@ -1,0 +1,78 @@
+# Single-broker Kafka in KRaft mode (no Zookeeper).
+#
+#   docker compose up -d          start broker + create the taxi-trips topic
+#   docker compose ps             kafka should be "healthy", kafka-init "exited (0)"
+#   docker compose down           stop (keeps data)
+#   docker compose down -v        stop and wipe the log dir
+#
+# Spark and the producer run on the HOST, so the broker advertises localhost:9092.
+
+services:
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: taxi-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # --- KRaft: this node is both broker and controller ---
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: taxi-demand-kraft-cluster
+
+      # --- Listeners -------------------------------------------------------
+      # PLAINTEXT  :9092  -> host clients (Spark, producer.py) see localhost:9092
+      # DOCKER     :29092 -> containers on this network see kafka:29092
+      # CONTROLLER :9093  -> KRaft quorum, node talks only to itself
+      # Two client listeners are required: a host client and an in-network client
+      # cannot share one advertised address.
+      # CONTROLLER must bind a ROUTABLE host, not 0.0.0.0 — in KRaft its advertised
+      # address is derived from `listeners`, and Kafka rejects 0.0.0.0 there.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,DOCKER://0.0.0.0:29092,CONTROLLER://localhost:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,DOCKER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+
+      # --- Single-broker sizing: everything replicates once ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      # Replay writes a lot of small messages; a week of retention is plenty.
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot: creates the topic then exits. Idempotent (--if-not-exists).
+  kafka-init:
+    image: apache/kafka:3.9.0
+    container_name: taxi-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    # Must be a LIST with one block scalar: a plain string here is word-split by
+    # Compose, so `sh -c` would receive only the first token.
+    # Topic settings mirror KAFKA_TOPIC / KAFKA_NUM_PARTITIONS in config.py.
+    command:
+      - |
+        set -e
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --create --if-not-exists --topic taxi-trips \
+          --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+          --describe --topic taxi-trips
+    restart: "no"
+
+volumes:
+  kafka-data:

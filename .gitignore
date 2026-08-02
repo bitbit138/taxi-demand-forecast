@@ -1,0 +1,43 @@
+# --- Data: never commit raw or derived parquet (GBs) ------------------------
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/external/*
+!data/external/.gitkeep
+# ...but a tiny committed sample is allowed for reproducibility
+!data/**/sample_*.csv
+!data/**/sample_*.parquet
+
+# --- Models & reports -------------------------------------------------------
+models/*
+!models/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# --- Spark / Ivy ------------------------------------------------------------
+.ivy2/
+spark-warehouse/
+metastore_db/
+derby.log
+*.crc
+_SUCCESS
+checkpoint/
+**/_checkpoints/
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Editors / OS -----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
