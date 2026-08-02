@@ -46,4 +46,4 @@ Thumbs.db
 desktop.ini
 
 # --- Launcher scratch -------------------------------------------------------
-demo_launch.log
+*.log

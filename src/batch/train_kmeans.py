@@ -40,6 +40,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 from pyspark.ml import Pipeline, PipelineModel
 from pyspark.ml.clustering import KMeans
 from pyspark.ml.evaluation import ClusteringEvaluator
@@ -50,6 +51,10 @@ from pyspark.sql import functions as F
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config  # noqa: E402
 from src.spark_session import describe, get_spark  # noqa: E402
+# pandas-only helper — importing it here keeps one definition of "what does this
+# cluster look like", so a re-sweep describes candidates exactly as the saved
+# model will later describe itself.
+from src.stream.predict_live import describe_shape  # noqa: E402
 
 PROFILE_COLS = [f"how_{i}" for i in range(config.HOURS_PER_WEEK)]
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -226,13 +231,20 @@ def describe_clusters(assigned: DataFrame, spark: SparkSession, k: int) -> None:
         F.avg(F.col(c) / F.col("total_demand")).alias(c) for c in PROFILE_COLS
     ]
     means = joined.groupBy("cluster").agg(*share_exprs).collect()
-    peaks = {}
+    sizes = dict(
+        joined.groupBy("cluster").count().rdd.map(lambda r: (int(r[0]), int(r[1]))).collect()
+    )
+    peaks, characters = {}, {}
     for row in means:
+        cluster_id = int(row["cluster"])
         shares = [(c, row[c]) for c in PROFILE_COLS]
         top = sorted(shares, key=lambda t: t[1], reverse=True)[:3]
-        peaks[int(row["cluster"])] = [
-            (int(c.split("_")[1]), v) for c, v in top
-        ]
+        peaks[cluster_id] = [(int(c.split("_")[1]), v) for c, v in top]
+        # Same labelling the saved model will report, derived from the shape.
+        series = pd.Series(
+            {int(c.split("_")[1]): row[c] for c in PROFILE_COLS}
+        ).sort_index()
+        characters[cluster_id] = describe_shape(series, sizes.get(cluster_id, 0))
 
     stats = (
         joined.groupBy("cluster")
@@ -255,6 +267,10 @@ def describe_clusters(assigned: DataFrame, spark: SparkSession, k: int) -> None:
         print(f"\n  cluster {cid}  |  {int(row['n_zones']):>3} zones  |  "
               f"avg {row['avg_zone_trips']:>9,.0f} trips/zone  |  "
               f"{int(row['sum_trips']):>9,} total")
+        print(f"    character          : {characters[cid]['label']}")
+        print(f"    weekend-night {100 * characters[cid]['weekend_night_share']:>5.2f}% "
+              f"| weekday-morning {100 * characters[cid]['weekday_morning_share']:>5.2f}% "
+              f"| weekday-evening {100 * characters[cid]['weekday_evening_share']:>5.2f}%")
         print(f"    peak hours-of-week : {peak_str}")
 
         members = (
@@ -279,6 +295,7 @@ def save_artifacts(
     chosen_by: str,
     sweeps: dict[str, list[dict]],
     selection: dict,
+    data_range: dict,
 ) -> None:
     """Persist the pipeline and the prediction rule for the streaming job."""
     model.write().overwrite().save(str(config.KMEANS_MODEL_DIR))
@@ -361,6 +378,9 @@ def save_artifacts(
         "normalization": "L1 row-normalisation (demand share per hour-of-week)",
         "profile_shape": [assigned.count(), config.HOURS_PER_WEEK],
         "train_only": True,
+        # What the model was actually fitted on, so a saved artifact can never be
+        # mistaken for a full-year run when it was built from the Q1 sample.
+        "data_range": data_range,
         "spark_version": config.SPARK_VERSION,
         "k_range": [config.K_MIN, config.K_MAX],
         "sweeps": sweeps,
@@ -387,7 +407,73 @@ def parse_args() -> argparse.Namespace:
         "--skip-raw", action="store_true",
         help="skip the raw-profile comparison sweep",
     )
+    parser.add_argument(
+        "--inspect", action="store_true",
+        help="sweep K, print both curves and the cluster characters at the top "
+             "candidate K values, then STOP without saving. Use this to choose K "
+             "on new data before committing to a number.",
+    )
+    parser.add_argument(
+        "--candidates", type=int, default=3,
+        help="how many candidate K values --inspect should describe (default 3)",
+    )
     return parser.parse_args()
+
+
+def candidate_ks(results: list[dict], k_elbow: int, incumbent: int, limit: int) -> list[int]:
+    """Which K values are worth looking at, best evidence first.
+
+    The incumbent is always included even if neither criterion picks it — the
+    question on new data is specifically whether the previous choice still holds.
+    """
+    by_silhouette = [r["k"] for r in sorted(results, key=lambda r: -r["silhouette"])]
+
+    # These three must always be described: the previous choice (is it still
+    # right?), the silhouette's pick, and the elbow's. Anything else is a bonus.
+    mandatory = [incumbent, by_silhouette[0], k_elbow]
+    extras = by_silhouette[1:]
+
+    seen, chosen = set(), []
+    for k in mandatory + extras:
+        if k not in seen and any(r["k"] == k for r in results):
+            seen.add(k)
+            chosen.append(k)
+        if len(chosen) >= max(limit, len(set(mandatory))):
+            break
+    return sorted(chosen)
+
+
+def inspect_k(
+    profiles: DataFrame, spark: SparkSession, results: list[dict],
+    k_elbow: int, incumbent: int, limit: int,
+) -> None:
+    """Describe the clusters produced at each candidate K, saving nothing."""
+    candidates = candidate_ks(results, k_elbow, incumbent, limit)
+    sil = {r["k"]: r["silhouette"] for r in results}
+    wcss = {r["k"]: r["wcss"] for r in results}
+
+    print("\n" + "=" * 78)
+    print(f"CANDIDATE K VALUES: {', '.join(str(k) for k in candidates)}")
+    print("=" * 78)
+    for k in candidates:
+        tag = "  <- incumbent from the previous run" if k == incumbent else ""
+        print(f"  K={k:<3} silhouette {sil[k]:+.4f}   WCSS {wcss[k]:>12,.0f}{tag}")
+
+    for k in candidates:
+        model = make_pipeline(k, normalize=True).fit(profiles)
+        assigned = model.transform(profiles).select(
+            "zone_id", "cluster", "total_demand", *PROFILE_COLS
+        ).cache()
+        describe_clusters(assigned, spark, k)
+        assigned.unpersist()
+
+    print("\n" + "=" * 78)
+    print("INSPECTION ONLY — nothing was saved.")
+    print("=" * 78)
+    print("  Compare the cluster characters above, then commit to a number:")
+    print(f"    python -m src.batch.train_kmeans --k <K>")
+    print(f"  The sweep curves are in {config.KSWEEP_CSV}")
+    print("=" * 78)
 
 
 def main() -> int:
@@ -407,6 +493,30 @@ def main() -> int:
     print(f"  K range   {config.K_MIN}..{config.K_MAX}")
 
     features = spark.read.parquet(str(config.FEATURES_PARQUET)).cache()
+
+    # The feature table on disk may predate the current TAXI_MONTHS setting — e.g.
+    # committing to a K for "the full year" against a table still built from Q1.
+    # Report what the model is actually being fitted on, and say so loudly if it
+    # disagrees with the configured range.
+    months = sorted(
+        r[0] for r in features.select(
+            F.substring("date_local", 1, 7).alias("m")
+        ).distinct().collect()
+    )
+    bounds = features.agg(
+        F.min("date_local").alias("lo"), F.max("date_local").alias("hi")
+    ).first()
+    data_range = {"months": months, "start": bounds["lo"], "end": bounds["hi"]}
+    print(f"\n  feature table covers : {bounds['lo']} .. {bounds['hi']} "
+          f"({len(months)} month(s))")
+    if months != sorted(config.MONTHS):
+        print("  " + "!" * 74)
+        print(f"  WARNING: config.MONTHS is {config.MONTHS[0]}..{config.MONTHS[-1]} "
+              f"({len(config.MONTHS)} months) but features.parquet holds "
+              f"{len(months)} month(s).")
+        print("  The model is being fitted on what is on disk, not on what is")
+        print("  configured. Re-run src.batch.features to rebuild it.")
+        print("  " + "!" * 74)
 
     print("\nLeakage check:")
     assert_train_only(features)
@@ -460,6 +570,26 @@ def main() -> int:
     print(f"  silhouette maximum    suggests K = {k_sil} "
           f"({best_sil['silhouette']:+.4f})")
 
+    if args.inspect:
+        # Always persist the curves: the figure and the report need them even
+        # though no model is being saved on this pass.
+        with config.KSWEEP_CSV.open("w", encoding="utf-8") as handle:
+            handle.write("variant,k,wcss,silhouette,min_cluster,max_cluster\n")
+            for variant, rows in sweeps.items():
+                for r in rows:
+                    handle.write(
+                        f"{variant},{r['k']},{r['wcss']:.6f},{r['silhouette']:.6f},"
+                        f"{r['min_cluster']},{r['max_cluster']}\n"
+                    )
+        print(f"\n  sweep curves written -> {config.KSWEEP_CSV}")
+        incumbent = int(
+            json.loads(config.KMEANS_METADATA_JSON.read_text()).get("chosen_k", 4)
+            if config.KMEANS_METADATA_JSON.exists() else 4
+        )
+        inspect_k(profiles, spark, results, k_elbow, incumbent, args.candidates)
+        spark.stop()
+        return 0
+
     if args.k is not None:
         chosen, chosen_by = args.k, "manual --k override"
     elif k_elbow == k_sil:
@@ -491,7 +621,7 @@ def main() -> int:
     describe_clusters(assigned, spark, chosen)
     save_artifacts(
         final, assigned, features, chosen, chosen_by, sweeps,
-        {"elbow": k_elbow, "silhouette": k_sil},
+        {"elbow": k_elbow, "silhouette": k_sil}, data_range,
     )
 
     print("\n" + "=" * 78)

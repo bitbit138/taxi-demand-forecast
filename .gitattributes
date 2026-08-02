@@ -1,6 +1,11 @@
 # Normalise line endings so Windows/other checkouts don't produce whole-file diffs.
 * text=auto eol=lf
 
+# Batch files must keep CRLF: cmd.exe mis-parses LF-only .bat, especially around
+# goto labels, so a fresh clone would get launchers that fail in odd ways.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Binary — never touch these.
 *.parquet binary
 *.zip     binary

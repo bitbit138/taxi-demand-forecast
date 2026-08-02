@@ -51,6 +51,55 @@ def hour_of_week(when: pd.Timestamp) -> int:
     return when.weekday() * 24 + when.hour
 
 
+def describe_shape(shares: pd.Series, n_zones: int) -> dict:
+    """Label a cluster from its 168-hour share profile.
+
+    Pure function of the shape, so the label stays truthful if K or the data
+    changes. Shared with ``train_kmeans.py`` — a full-year re-sweep must describe
+    its candidate clusters the same way the saved model does.
+
+    Args:
+        shares: 168 values indexed by hour-of-week, summing to ~1.0.
+        n_zones: members of the cluster.
+    """
+    peak = int(shares.idxmax())
+    weekend_night = float(
+        shares[[d * 24 + h for d in (4, 5) for h in (22, 23)]
+               + [d * 24 + h for d in (5, 6) for h in (0, 1, 2)]].sum()
+    )
+    weekday_morning = float(
+        shares[[d * 24 + h for d in range(5) for h in (6, 7, 8, 9)]].sum()
+    )
+    weekday_evening = float(
+        shares[[d * 24 + h for d in range(5) for h in (16, 17, 18, 19)]].sum()
+    )
+
+    if n_zones <= 2:
+        # A one- or two-zone cluster is an artifact of zones sitting just above the
+        # exclusion floor: their profiles are mostly noise, so naming a "character"
+        # would give the shape more credit than it has.
+        label = "single-zone artifact — sparse, mostly noise"
+    elif weekend_night > 0.15:
+        label = "nightlife — weekend small hours"
+    elif weekday_morning > 0.20:
+        label = "residential commute — weekday mornings"
+    elif weekday_evening > weekday_morning:
+        label = "business core — weekday evenings"
+    else:
+        label = "mixed / low-signal"
+
+    return {
+        "label": label,
+        "peak_how": peak,
+        "peak_label": how_label(peak),
+        "peak_share": float(shares.max()),
+        "weekend_night_share": weekend_night,
+        "weekday_morning_share": weekday_morning,
+        "weekday_evening_share": weekday_evening,
+        "n_zones": n_zones,
+    }
+
+
 class Forecaster:
     """The saved model, loaded once."""
 
@@ -88,43 +137,8 @@ class Forecaster:
         characters: dict[int, dict] = {}
         for cluster, group in self.shape.groupby("cluster"):
             shares = group.set_index("hour_of_week")["cluster_share"]
-            peak = int(shares.idxmax())
-
-            weekend_night = float(
-                shares[[d * 24 + h for d in (4, 5) for h in (22, 23)]
-                       + [d * 24 + h for d in (5, 6) for h in (0, 1, 2)]].sum()
-            )
-            weekday_morning = float(
-                shares[[d * 24 + h for d in range(5) for h in (6, 7, 8, 9)]].sum()
-            )
-            weekday_evening = float(
-                shares[[d * 24 + h for d in range(5) for h in (16, 17, 18, 19)]].sum()
-            )
-
             n_zones = int((self.zones["cluster"] == cluster).sum())
-            if n_zones <= 2:
-                # A one- or two-zone cluster is an artifact of zones sitting just
-                # above the exclusion floor: their profiles are mostly noise, so
-                # naming a "character" would give the shape more credit than it has.
-                label = f"single-zone artifact — sparse, mostly noise"
-            elif weekend_night > 0.15:
-                label = "nightlife — weekend small hours"
-            elif weekday_morning > 0.20:
-                label = "residential commute — weekday mornings"
-            elif weekday_evening > weekday_morning:
-                label = "business core — weekday evenings"
-            else:
-                label = "mixed / low-signal"
-
-            characters[int(cluster)] = {
-                "label": label,
-                "peak_how": peak,
-                "peak_label": how_label(peak),
-                "peak_share": float(shares.max()),
-                "weekend_night_share": weekend_night,
-                "weekday_morning_share": weekday_morning,
-                "n_zones": n_zones,
-            }
+            characters[int(cluster)] = describe_shape(shares, n_zones)
         return characters
 
     @property

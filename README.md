@@ -97,7 +97,8 @@ python -m src.viz.make_maps
 | *(environment)* | `TAXI_MONTHS=full` | 12 months of 2024 instead of the Q1 sample. Read by `config.py`, so it applies to **every** script — set it once per shell. |
 | `download_tlc` | `--yes` | Required to download more than the 3-month sample. Also `--months 2024-04 2024-05`, `--force`. |
 | `clean_aggregate` | `--force` | Write output even if a cleaning filter drops >10% of rows. Without it the job stops and shows the funnel. |
-| `train_kmeans` | `--k N` | Pin K. Omit it to see the elbow/silhouette disagreement and its default choice. `--skip-raw` skips the volume-vs-shape comparison sweep. |
+| `train_kmeans` | `--inspect` | Sweep K, describe the clusters at the top candidate K values, save nothing. How you choose K on new data. `--candidates N` sets how many to describe (default 3). |
+| `train_kmeans` | `--k N` | Pin K and save the model. Omit both `--k` and `--inspect` to be shown the disagreement and take the default. `--skip-raw` skips the volume-vs-shape comparison sweep. |
 | `producer` | `--reset-topic` | Delete and recreate the topic — a clean demo. Required if the topic is non-empty, else the run is refused. |
 | `producer` | `--reset-only` | Reset and exit, without producing. Use this **before** starting a consumer. |
 | `producer` | `--speedup N` | Simulated seconds per real second (default 600 = 1 real sec ⇒ 10 simulated min). Also `--hours`, `--start`, `--append`, `--dry-run`. |
@@ -105,6 +106,12 @@ python -m src.viz.make_maps
 | `predict_live` | `--zone / --at` | The query. `--temp/--precip/--is-event` are accepted but ignored by this model. |
 
 ### Full-year run
+
+K is **not** pinned for the full year. Q1 chose K=4, but twelve months add seasonal
+structure a quarter cannot show, so the choice is re-made on the new data and reviewed
+before anything is saved. The run is therefore two phases.
+
+**Phase 1 — build everything and sweep K:**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -117,15 +124,37 @@ python -m src.batch.clean_aggregate
 python -m src.batch.zone_policy
 python -m src.batch.geo_join
 python -m src.batch.features
-python -m src.batch.train_kmeans --k 4
+python -m src.batch.train_kmeans --inspect --candidates 3
+```
+
+`--inspect` sweeps K=2..12, writes `reports/k_sweep.csv`, and prints the cluster
+characters at the top candidates — always including the **silhouette's pick, the elbow's
+pick, and the incumbent K=4**, so "does 4 still hold?" is answerable directly. It saves
+no model.
+
+**Phase 2 — commit to a K:**
+
+```powershell
+python -m src.batch.train_kmeans --k <N>
 python -m src.batch.evaluate
 python -m src.viz.make_maps
 ```
 
-Or simply `.\run_pipeline_full_year.bat`. Expect roughly 600 MB of parquet and ~41M
-trips; the weather cache is rebuilt because the hourly range grows from 2,183 to 8,784
-hours per zone. **K=4 was chosen from the Q1 clustering** — re-inspect the elbow and
-silhouette output before treating it as settled for the full year.
+Or use the launcher, which does the same in two invocations:
+
+```powershell
+.un_pipeline_full_year.bat        # phase 1, stops for review
+.un_pipeline_full_year.bat k 4    # phase 2, once you have chosen
+```
+
+`kmeans_metadata.json` records the chosen K, both criterion suggestions, both sweep
+curves, the seed, and — added for this run — `data_range`, the months the model was
+actually fitted on, so a Q1 artifact can never be mistaken for a full-year one.
+`train_kmeans` also warns loudly if `features.parquet` on disk covers a different range
+than `TAXI_MONTHS` configures.
+
+Expect roughly 600 MB of parquet and ~41M trips. The weather cache rebuilds in full,
+because the expected range grows from 2,183 to 8,784 hours per zone.
 
 ### Two-terminal streaming demo
 
