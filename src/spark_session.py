@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+import pyspark
 from pyspark.sql import SparkSession
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -47,6 +48,11 @@ def get_spark(
     # Both ends must be the same interpreter.
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
+
+    # This repo path contains spaces ("Year 3", "Semester B"), which trips PySpark's
+    # SPARK_HOME auto-detection and prints a spurious "Missing Python executable"
+    # warning. Setting it from the installed package removes the guesswork.
+    os.environ.setdefault("SPARK_HOME", str(Path(pyspark.__file__).resolve().parent))
 
     builder = (
         SparkSession.builder.appName(app_name)

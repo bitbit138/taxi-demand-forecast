@@ -209,6 +209,11 @@ MAX_FARE_AMOUNT = 1000.0
 MIN_PASSENGER_COUNT, MAX_PASSENGER_COUNT = 1, 8
 MAX_TRIP_DURATION_MINUTES = 24 * 60
 
+# A single cleaning filter removing more than this fraction of rows is treated as
+# suspicious: it more likely signals a wrong assumption than dirty data, and would
+# silently distort demand. clean_aggregate.py refuses to write in that case.
+FUNNEL_ALERT_FRACTION = 0.10
+
 # Explicit read schema — never use mergeSchema (schema drifts across months).
 TLC_COLUMNS = [
     "tpep_pickup_datetime",
