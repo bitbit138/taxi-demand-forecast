@@ -97,7 +97,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 | 9 | `python -m src.batch.evaluate` | baseline-ladder metrics table |
 | 10 | `python -m src.stream.producer --reset-topic` | replays trips into Kafka |
 | 11 | `python -m src.stream.spark_stream --validate` | windowed predicted-vs-actual demand |
-| 12 | `python -m src.stream.predict_live` | single live query -> predicted demand |
+| 12 | `python -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00"` | single live query -> predicted demand |
 | 13 | `python -m src.viz.make_maps` | Folium map, GeoJSON, heatmap |
 
 Scripts are run from the repo root so that `import config` resolves.
@@ -241,6 +241,29 @@ The live rule is **cluster shape × zone level**, the interpretable model — de
 not `hist_avg`, which is more accurate but has no compact live representation
 (37,464 cells versus 895). With a 2-hour watermark the final ~2 simulated hours of any
 replay never close, so replay more hours than you intend to validate.
+
+### Single-query forecaster
+
+```bash
+python -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00"
+python -m src.stream.predict_live --validate
+```
+
+Loads the same artifacts the stream serves and applies identical arithmetic, so a
+single query returns exactly the number the stream and batch produce for the same
+`(zone, hour-of-week)` — verified to the cent. Pandas rather than Spark, so a demo
+query answers instantly. The response shows its reasoning: which cluster, that
+cluster's character (derived from its shape at load time, never hard-coded), the zone's
+level, and the multiplier.
+
+**The model is a function of `(zone, hour-of-week)` only.** `--temp`, `--precip` and
+`--is-event` are accepted so the interface is stable for a future feature-based model,
+but they are ignored and every response that supplies one says so explicitly. That
+honesty is load-bearing: on New Year's morning zone 79 saw **440** trips at 02:00
+against a prediction of **88.65**, because the model can only offer an average Monday
+2 a.m. An interface that quietly accepted `--is-event` would imply an event-awareness
+this model does not have. Zones outside the 223-zone modelling set are rejected with the
+reason, never answered with a silently wrong number.
 
 ## Windows gotchas already handled
 
