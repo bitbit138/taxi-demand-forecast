@@ -288,8 +288,20 @@ def save_artifacts(
         str(config.ZONE_CLUSTERS_PARQUET)
     )
 
-    # Prediction rule: a query's demand is its cluster's mean demand for that
-    # hour-of-week. Computed on TRAIN rows only, like everything else.
+    # Two prediction rules are saved, because clustering on SHAPE removes exactly the
+    # volume information a raw cluster mean needs:
+    #
+    #   predicted_demand  the cluster's mean demand for that hour-of-week. Pools zones
+    #                     of wildly different size (Midtown and a quiet Bronx zone sit
+    #                     in the same cluster because their *shapes* match), so it
+    #                     over-predicts small zones and under-predicts large ones.
+    #   cluster_share     the cluster's mean *share* of weekly demand at that
+    #                     hour-of-week, summing to 1.0 across the 168 hours. Multiplied
+    #                     by a zone's own mean level it reconstructs a level-correct
+    #                     forecast while still taking its temporal shape from the
+    #                     cluster. This is the rule that matches how the model was fitted.
+    #
+    # Both are computed on TRAIN rows only.
     cluster_demand = (
         features.filter(F.col("is_train"))
         .join(F.broadcast(zone_clusters.select("zone_id", "cluster")), on="zone_id")
@@ -298,6 +310,29 @@ def save_artifacts(
             F.avg("trip_count").alias("predicted_demand"),
             F.count(F.lit(1)).alias("n_observations"),
         )
+    )
+
+    per_zone_share = assigned.select(
+        "zone_id",
+        "cluster",
+        F.explode(
+            F.array(
+                *[
+                    F.struct(
+                        F.lit(i).cast("smallint").alias("hour_of_week"),
+                        (F.col(f"how_{i}") / F.col("total_demand")).alias("share"),
+                    )
+                    for i in range(config.HOURS_PER_WEEK)
+                ]
+            )
+        ).alias("s"),
+    ).select("zone_id", "cluster", "s.hour_of_week", "s.share")
+
+    cluster_shape = per_zone_share.groupBy("cluster", "hour_of_week").agg(
+        F.avg("share").alias("cluster_share")
+    )
+    cluster_demand = cluster_demand.join(
+        cluster_shape, on=["cluster", "hour_of_week"], how="left"
     )
     cluster_demand.coalesce(1).write.mode("overwrite").parquet(
         str(config.CLUSTER_PROFILE_PARQUET)

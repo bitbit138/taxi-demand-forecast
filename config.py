@@ -43,6 +43,7 @@ CLUSTER_PROFILE_PARQUET = MODELS_DIR / "cluster_demand.parquet"  # cluster -> me
 ZONE_CLUSTERS_PARQUET = MODELS_DIR / "zone_clusters.parquet"     # zone_id -> cluster
 KMEANS_METADATA_JSON = MODELS_DIR / "kmeans_metadata.json"       # K, seed, sweep results
 KSWEEP_CSV = REPORTS_DIR / "k_sweep.csv"                         # elbow/silhouette curves
+METRICS_CSV = REPORTS_DIR / "baseline_metrics.csv"               # evaluate.py results
 
 STREAM_OUTPUT_DIR = PROCESSED_DIR / "stream_predictions"
 STREAM_CHECKPOINT_DIR = PROCESSED_DIR / "_checkpoints"
@@ -256,8 +257,11 @@ MODELING_ZONES_PARQUET = PROCESSED_DIR / "modeling_zones.parquet"
 # --------------------------------------------------------------------------- #
 K_MIN, K_MAX = 2, 12             # elbow + silhouette sweep range
 KMEANS_MAX_ITER = 50
-MOVING_AVG_WINDOW = 24 * 7       # hours in the moving-average baselines
-EWMA_ALPHA = 0.3
+# The moving-average baselines are *seasonal*: they average the same hour-of-week
+# over the previous N weeks. A flat trailing mean would ignore the strong daily and
+# weekly cycles and predict one number for every hour of the day.
+MA_WEEKS = 4                     # lags of 168, 336, 504, 672 hours
+EWMA_ALPHA = 0.3                 # truncated to the same MA_WEEKS lags
 MAPE_EPSILON = 1.0               # guard against divide-by-zero on empty bins
 
 # --------------------------------------------------------------------------- #
