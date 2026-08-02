@@ -330,6 +330,14 @@ def main() -> int:
         weather.drop_duplicates(subset=["zone_id", "ts_local"], keep="last")
         .sort_values(["zone_id", "ts_local"], ignore_index=True)
     )
+
+    # pandas defaults to nanosecond timestamps, which parquet stores as
+    # TIMESTAMP(NANOS) — Spark 3.5 rejects that with "Illegal Parquet type".
+    # Microseconds are the widest precision Spark reads, and hourly data loses
+    # nothing by it.
+    for column in ("ts_local", "ts_utc"):
+        weather[column] = weather[column].astype("datetime64[us]")
+
     weather.to_parquet(config.WEATHER_PARQUET, index=False)
 
     ok = validate(weather, load_centroids() if not args.zones else centroids)

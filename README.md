@@ -81,7 +81,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 
 ## Run order
 
-> Steps 1–6 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
+> Steps 1–7 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
 
 | # | Command | Output |
 | --- | --- | --- |
@@ -167,6 +167,24 @@ paired on purpose: zero-filling *without* the floor would manufacture ~87k all-z
 for places with no taxi service at all (Governor's Island has no road access), which is
 precisely the degenerate cluster the floor exists to prevent. The exclusion list is
 printed in full on every run rather than applied silently.
+
+**Two distinct modelling artifacts — do not conflate them.**
+
+| Artifact | Grain | Shape | Used by |
+| --- | --- | --- | --- |
+| `features.parquet` | one row per `(zone_id, date_local, hour_local)` | 223 × 2183 = 486,809 | baselines, `evaluate.py` |
+| profile matrix (derived in `train_kmeans.py`, not stored) | one row per zone | 223 × 168 `(hour, dow)` | K-Means clustering |
+
+K-Means clusters *zones* by their weekly demand profile; the per-observation table is
+what the baseline ladder is scored against. Building the profile matrix inside
+`train_kmeans.py` keeps it obvious which one K-Means actually consumes.
+
+**`hist_avg_demand` is fitted on the training split only.** It is simultaneously a
+feature and the first rung of the baseline ladder, so computing it over the whole
+quarter would leak test-period demand into training and flatter every metric. The split
+is time-based (train `2024-01-01..2024-03-12`, test `2024-03-13..2024-03-31`) and
+deterministic — no seed involved — and is stored as `is_train` so `evaluate.py` reuses
+exactly the same split rather than re-deriving it.
 
 ## Windows gotchas already handled
 
