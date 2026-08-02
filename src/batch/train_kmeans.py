@@ -366,9 +366,41 @@ def save_artifacts(
         str(config.CLUSTER_PROFILE_PARQUET)
     )
 
+    # Carry forward what this run replaces, so a change of K is documented in the
+    # artifact itself rather than living only in someone's memory of the decision.
+    superseded = None
+    if config.KMEANS_METADATA_JSON.exists():
+        try:
+            old = json.loads(config.KMEANS_METADATA_JSON.read_text())
+            superseded = {
+                "chosen_k": old.get("chosen_k"),
+                "chosen_by": old.get("chosen_by"),
+                "data_range": old.get("data_range"),
+            }
+        except json.JSONDecodeError:
+            superseded = None
+
+    changed = bool(superseded and superseded.get("chosen_k") not in (None, k))
+    if changed:
+        old_months = (superseded.get("data_range") or {}).get("months") or ["?"]
+        note = (
+            f"K changed from {superseded['chosen_k']} to {k}. "
+            f"K={superseded['chosen_k']} was selected on {len(old_months)} month(s) "
+            f"({old_months[0]}..{old_months[-1]}); K={k} is selected on "
+            f"{len(data_range['months'])} month(s) "
+            f"({data_range['months'][0]}..{data_range['months'][-1]})."
+        )
+    elif superseded:
+        note = f"K={k} unchanged from the previous run."
+    else:
+        note = f"K={k} is the first recorded selection."
+
     metadata = {
         "chosen_k": k,
         "chosen_by": chosen_by,
+        "selection_note": note,
+        "selection_changed": changed,
+        "supersedes": superseded,
         # Kept even when K is overridden — the report needs to show that the two
         # criteria disagreed and which one the chosen K came from.
         "k_suggested_by_elbow": selection["elbow"],

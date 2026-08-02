@@ -45,9 +45,16 @@ from src.stream.predict_live import DAY_NAMES, Forecaster, how_label  # noqa: E4
 
 GEOJSON_DIR = config.REPORTS_DIR / "geojson"
 
-# Categorical slots 1-3: the only three that clear the all-pairs CVD floors a
-# choropleth needs. The singleton takes a neutral, not a fourth hue.
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a"]
+# Choropleth colours must clear the *all-pairs* colour-vision gate, not just the
+# adjacent-pair one. The documented palette's first three slots do; adding its fourth
+# (yellow) puts yellow beside orange and fails the normal-vision floor at 13.7 (needs
+# 15). Slots 1-3 plus violet, plus a dark gold re-stepped away from orange, was found
+# by running scripts/validate_palette.js over candidates:
+#   CVD 9.2 (deutan) · normal-vision 16.3 · all checks PASS at 5 slots, light mode.
+# Aqua sits at 2.74:1 contrast, so the relief rule applies — every zone carries a text
+# tooltip and the legend names each cluster, so identity is never colour-alone.
+# The singleton, when one exists, takes a neutral instead of a hue.
+SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#8c5a00"]
 NEUTRAL = "#7a7975"
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
@@ -76,6 +83,17 @@ def cluster_style(forecaster: Forecaster) -> dict[int, dict]:
     order = (
         forecaster.zones.groupby("cluster").size().sort_values(ascending=False).index
     )
+    n_hued = sum(
+        1 for c in order if forecaster.characters[int(c)]["n_zones"] > 1
+    )
+    if n_hued > len(SERIES):
+        raise ValueError(
+            f"{n_hued} clusters need a hue but only {len(SERIES)} validated slots "
+            "exist. Do not wrap the palette — two clusters would share a colour and "
+            "the map would be unreadable. Extend SERIES and re-run "
+            "scripts/validate_palette.js with --pairs all before using it."
+        )
+
     styles: dict[int, dict] = {}
     slot = 0
     for cluster in order:
@@ -84,7 +102,7 @@ def cluster_style(forecaster: Forecaster) -> dict[int, dict]:
         if singleton:
             colour, weight, dash = NEUTRAL, 2.5, "6,3"
         else:
-            colour, weight, dash = SERIES[slot % len(SERIES)], 0.6, None
+            colour, weight, dash = SERIES[slot], 0.6, None
             slot += 1
         styles[int(cluster)] = {
             "color": colour,
@@ -96,6 +114,17 @@ def cluster_style(forecaster: Forecaster) -> dict[int, dict]:
             "peak": character["peak_label"],
             "n_zones": character["n_zones"],
         }
+
+    # Two clusters can legitimately earn the same character — the full year splits
+    # residential commute into two groups. A legend with two identically named
+    # entries is unreadable, so collisions are suffixed with their peak hour, which
+    # is what actually distinguishes them.
+    from collections import Counter  # noqa: PLC0415
+
+    counts = Counter(s["short"] for s in styles.values())
+    for style in styles.values():
+        if counts[style["short"]] > 1:
+            style["short"] = f"{style['short']} ({style['peak']})"
     return styles
 
 
@@ -331,8 +360,9 @@ def plot_heatmap(forecaster: Forecaster, styles: dict[int, dict]) -> Path:
         "The nightlife band peaks in the weekend small hours; the business-core band peaks on weekday evenings and empties at weekends.",
         transform=ax.transAxes, color=INK_MUTED, fontsize=9.5, va="top",
     )
-    # right=0.99 clipped the colorbar tick labels off the canvas.
-    fig.subplots_adjust(left=0.20, right=0.925, top=0.90, bottom=0.16)
+    # right=0.99 clipped the colorbar tick labels off the canvas; left=0.20 clipped
+    # cluster labels once collisions started carrying a "(Wed 07:00)" suffix.
+    fig.subplots_adjust(left=0.245, right=0.925, top=0.90, bottom=0.16)
 
     out = config.REPORTS_DIR / "zone_hour_heatmap.png"
     fig.savefig(out, dpi=160, facecolor=SURFACE)
@@ -576,6 +606,21 @@ def validate(forecaster: Forecaster, styles: dict[int, dict], outputs: list[Path
               f"({style['n_zones']} zones, {style['short']})")
         ok = ok and present
 
+    # Presence alone is not enough: a wrapped palette would put the same hex on two
+    # clusters and still report "present" for both.
+    colours = [s["color"] for s in styles.values()]
+    distinct = len(set(colours)) == len(colours)
+    print(f"   every cluster a distinct colour : {distinct}")
+    if not distinct:
+        dupes = {c for c in colours if colours.count(c) > 1}
+        print(f"     COLLISION on {sorted(dupes)} — the map cannot be read")
+    ok = ok and distinct
+
+    labels = [s["short"] for s in styles.values()]
+    unique_labels = len(set(labels)) == len(labels)
+    print(f"   every cluster a distinct label  : {unique_labels}")
+    ok = ok and unique_labels
+
     geo_ids = set(pd.read_parquet(config.ZONE_CENTROIDS_PARQUET)["zone_id"])
     missing_geom = set(forecaster.zones["zone_id"]) - geo_ids
     print(f"   zones without geometry    : {len(missing_geom)} {sorted(missing_geom) or ''}")
@@ -608,7 +653,13 @@ def validate(forecaster: Forecaster, styles: dict[int, dict], outputs: list[Path
     print(f"   silhouette peak in csv     : K={sil_peak}  (annotated K={k_sil})")
     print(f"   WCSS knee from metadata    : K={k_elbow}")
     print(f"   chosen K marked            : K={chosen}")
-    ok = ok and sil_peak == k_sil and chosen == 4
+    # The chosen K is whatever the metadata records — it is a decision, not a
+    # constant. An earlier version asserted chosen == 4 and failed the whole render
+    # the moment the full-year run selected 5.
+    n_clusters = len(styles)
+    matches = chosen == n_clusters
+    print(f"   clusters rendered          : {n_clusters} (matches chosen K: {matches})")
+    ok = ok and sil_peak == k_sil and matches
     monotone = norm.sort_values("k")["wcss"].is_monotonic_decreasing
     print(f"   WCSS decreasing with K     : {monotone} "
           "(non-monotone steps are k-means|| restarts, not an error)")
