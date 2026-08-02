@@ -233,6 +233,22 @@ FOURIER_TERMS = 3                # harmonics on the 168-hour week signal
 HOURS_PER_WEEK = 168
 
 # --------------------------------------------------------------------------- #
+# Zone policy — owned by src/batch/zone_policy.py, applied by features.py
+# --------------------------------------------------------------------------- #
+# Zero-fill: every kept zone gets a row for EVERY hour of the range, with absent
+# (zone, hour) bins set to trip_count = 0, so each zone's series is continuous.
+ZERO_FILL_DEMAND = True
+
+# Exclusion floor: a zone averaging fewer than this many trips per day over the
+# range is dropped from the modelling set. Below one trip a day a zone's hourly
+# profile is ~99% zeros — effectively the zero vector — so K-Means would spend a
+# cluster separating "no demand" from everything else and the silhouette would be
+# flattered by that trivially separable group. Expressed per day so it scales
+# unchanged from the 3-month sample to the full year.
+MIN_ZONE_TRIPS_PER_DAY = 1.0
+MODELING_ZONES_PARQUET = PROCESSED_DIR / "modeling_zones.parquet"
+
+# --------------------------------------------------------------------------- #
 # Modelling (train_kmeans.py / evaluate.py)
 # --------------------------------------------------------------------------- #
 K_MIN, K_MAX = 2, 12             # elbow + silhouette sweep range

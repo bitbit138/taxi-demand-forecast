@@ -81,7 +81,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 
 ## Run order
 
-> Steps 1–4 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
+> Steps 1–6 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
 
 | # | Command | Output |
 | --- | --- | --- |
@@ -90,7 +90,8 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 | 3 | `python -m src.ingest.fetch_weather` | `data/external/weather.parquet` |
 | 4 | `python -m src.ingest.build_events` | `data/external/events.csv` |
 | 5 | `python -m src.batch.clean_aggregate` | `data/processed/demand.parquet` |
-| 6 | `python -m src.batch.geo_join` | `data/processed/zone_centroids.parquet` |
+| 6a | `python -m src.batch.zone_policy` | `data/processed/modeling_zones.parquet` |
+| 6b | `python -m src.batch.geo_join` | `data/processed/zone_centroids.parquet` |
 | 7 | `python -m src.batch.features` | `data/processed/features.parquet` |
 | 8 | `python -m src.batch.train_kmeans` | `models/kmeans/`, elbow + silhouette plots |
 | 9 | `python -m src.batch.evaluate` | baseline-ladder metrics table |
@@ -155,6 +156,17 @@ most people and should not be assumed to move demand the way a federal holiday d
 One curated date was corrected: the **St. Patrick's Day Parade was 2024-03-16**, not the
 17th — when 17 March falls on a Sunday NYC moves the parade to the preceding Saturday.
 The parade and the day itself are now separate entries.
+
+**Zone policy (zero-fill + exclusion).** Owned by `src/batch/zone_policy.py` so
+`features.py`, `train_kmeans.py`, `evaluate.py` and `make_maps.py` cannot drift apart.
+`demand.parquet` holds observed demand only; `features.py` builds the full
+`kept zones × every hour` grid and zero-fills the gaps. Zones averaging under
+`MIN_ZONE_TRIPS_PER_DAY = 1.0` are excluded first — **40 of 263 zones, carrying 634 trips
+= 0.0070% of demand**, leaving **223 zones and 99.9930% of demand**. The two rules are
+paired on purpose: zero-filling *without* the floor would manufacture ~87k all-zero rows
+for places with no taxi service at all (Governor's Island has no road access), which is
+precisely the degenerate cluster the floor exists to prevent. The exclusion list is
+printed in full on every run rather than applied silently.
 
 ## Windows gotchas already handled
 
