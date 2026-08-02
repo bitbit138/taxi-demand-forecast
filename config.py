@@ -40,6 +40,9 @@ ZONE_SHAPEFILE = ZONE_SHAPEFILE_DIR / "taxi_zones.shp"
 
 KMEANS_MODEL_DIR = MODELS_DIR / "kmeans"                  # saved PipelineModel
 CLUSTER_PROFILE_PARQUET = MODELS_DIR / "cluster_demand.parquet"  # cluster -> mean demand
+ZONE_CLUSTERS_PARQUET = MODELS_DIR / "zone_clusters.parquet"     # zone_id -> cluster
+KMEANS_METADATA_JSON = MODELS_DIR / "kmeans_metadata.json"       # K, seed, sweep results
+KSWEEP_CSV = REPORTS_DIR / "k_sweep.csv"                         # elbow/silhouette curves
 
 STREAM_OUTPUT_DIR = PROCESSED_DIR / "stream_predictions"
 STREAM_CHECKPOINT_DIR = PROCESSED_DIR / "_checkpoints"
