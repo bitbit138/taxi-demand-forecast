@@ -35,9 +35,15 @@ env/
 .pytest_cache/
 .ipynb_checkpoints/
 
+# --- Runtime markers --------------------------------------------------------
+.stream_ready
+
 # --- Editors / OS -----------------------------------------------------------
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Launcher scratch -------------------------------------------------------
+demo_launch.log

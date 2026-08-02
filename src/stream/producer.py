@@ -233,6 +233,12 @@ def parse_args() -> argparse.Namespace:
         "--append", action="store_true",
         help="produce into a non-empty topic on purpose",
     )
+    group.add_argument(
+        "--reset-only", action="store_true",
+        help="delete and recreate the topic, then exit without producing. Use this "
+             "BEFORE starting a consumer — resetting while a stream is subscribed "
+             "can fault the query on a vanished topic.",
+    )
     parser.add_argument(
         "--dry-run", action="store_true",
         help="print the first messages and exit; no broker needed",
@@ -242,6 +248,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    if args.reset_only:
+        admin_cls, _, new_topic_cls, unknown_exc = _import_kafka()
+        print("Resetting topic before any consumer attaches...")
+        reset_topic(admin_cls, new_topic_cls, unknown_exc, config.KAFKA_BOOTSTRAP_SERVERS)
+        print(f"  {config.KAFKA_TOPIC} is empty and ready.")
+        return 0
 
     start = pd.Timestamp(args.start) if args.start else pd.Timestamp(
         f"{config.START_DATE} 00:00:00"

@@ -101,7 +101,13 @@ class Forecaster:
                 shares[[d * 24 + h for d in range(5) for h in (16, 17, 18, 19)]].sum()
             )
 
-            if weekend_night > 0.15:
+            n_zones = int((self.zones["cluster"] == cluster).sum())
+            if n_zones <= 2:
+                # A one- or two-zone cluster is an artifact of zones sitting just
+                # above the exclusion floor: their profiles are mostly noise, so
+                # naming a "character" would give the shape more credit than it has.
+                label = f"single-zone artifact — sparse, mostly noise"
+            elif weekend_night > 0.15:
                 label = "nightlife — weekend small hours"
             elif weekday_morning > 0.20:
                 label = "residential commute — weekday mornings"
@@ -117,9 +123,14 @@ class Forecaster:
                 "peak_share": float(shares.max()),
                 "weekend_night_share": weekend_night,
                 "weekday_morning_share": weekday_morning,
-                "n_zones": int((self.zones["cluster"] == cluster).sum()),
+                "n_zones": n_zones,
             }
         return characters
+
+    @property
+    def characters(self) -> dict[int, dict]:
+        """Derived cluster characters, keyed by cluster id."""
+        return self._characters
 
     def predict(self, zone_id: int, when: pd.Timestamp) -> dict:
         """Predicted demand plus the reasoning behind it."""

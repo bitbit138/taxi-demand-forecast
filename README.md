@@ -6,8 +6,9 @@ Team: Lee Rosenblit, Tom Bitran.
 Forecast NYC yellow-taxi **demand per `zone × hour`** by fusing TLC trip records with weather
 (Open-Meteo) and event/holiday flags. **Kafka** replays historical parquet as a simulated live
 stream; **Spark Structured Streaming** consumes it. **K-Means (Spark MLlib)** discovers
-demand-pattern clusters and a query's demand is predicted from its cluster mean, scored against a
-ladder of baselines with **MAE / RMSE / MAPE**.
+demand-pattern clusters; a query's demand is predicted from its cluster's weekly **shape**
+scaled by the zone's own level, scored against a ladder of baselines with **MAE / RMSE /
+WAPE** (WAPE rather than MAPE — the grid is ~49% zero bins, where MAPE is undefined).
 
 The model is trained **once in batch, saved, and reloaded unchanged by the streaming job** — the
 live path never retrains, so batch and live predictions agree by construction. Re-running
@@ -35,81 +36,166 @@ failing later as an opaque Py4J gateway error.
 
 ---
 
-## Setup
+## How to run
+
+**Every command is run from the project root, and every script is invoked as a module
+(`python -m src.…`), not as a file path.** Both forms happen to work, but the module
+form is the one documented and tested: it puts the project root on `sys.path`, which is
+what makes `import config` and the cross-file imports resolve (`spark_stream.py` imports
+`build_filters` and `local_date_hour` from `clean_aggregate.py`, `make_maps.py` imports
+`Forecaster` from `predict_live.py`). The one exception is `spark_stream.py` when
+launched through `spark-submit`, which takes a file path — see step 11.
+
+Prefer not to type it? [`run_pipeline_full_year.bat`](run_pipeline_full_year.bat) and
+[`run_demo.bat`](run_demo.bat) do all of it.
+
+### One-time setup
 
 ```powershell
-# 1. Java 17 — Spark reads JAVA_HOME, not PATH, so point it at the JDK 17 root.
-#    (A newer JDK may still be first on PATH; that is fine and does not affect Spark.)
+cd "<repo root>"
+
+# 1. Java 17 — Spark reads JAVA_HOME, not PATH.
 [Environment]::SetEnvironmentVariable(
   'JAVA_HOME', 'C:\Program Files\Eclipse Adoptium\jdk-17.0.20.8-hotspot', 'User')
-$env:JAVA_HOME = [Environment]::GetEnvironmentVariable('JAVA_HOME','User')  # this session
-& "$env:JAVA_HOME\bin\java.exe" -version                                    # -> 17.x
+$env:JAVA_HOME = [Environment]::GetEnvironmentVariable('JAVA_HOME','User')
+& "$env:JAVA_HOME\bin\java.exe" -version      # -> 17.x
 
-# 2. Python 3.11 venv — the launcher picks the right interpreter even if
-#    `python` is a newer version.
+# 2. Python 3.11 virtual environment
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1      # Windows
-# source .venv/bin/activate       # Linux/macOS
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
-# 3. Windows only — Hadoop needs winutils.exe to write local files.
-#    Already committed under hadoop/bin; config.configure_hadoop_home() wires it up.
-#    If missing, fetch winutils.exe + hadoop.dll for hadoop-3.3.6 into hadoop/bin.
-
-# 3. Kafka (Docker Desktop with the WSL2 backend on Windows)
+# 3. Kafka (only needed for steps 10-12)
 docker compose up -d
-docker compose ps                 # kafka: healthy, kafka-init: exited (0)
+docker compose ps                              # kafka healthy, kafka-init exited (0)
 ```
 
-### Kafka smoke test
+`hadoop/bin/winutils.exe` is committed, so no extra Windows step is needed.
+
+### Batch pipeline, in dependency order
+
+Activate the venv first (`.\.venv\Scripts\Activate.ps1`). Default is the 3-month
+sample; see *Full-year run* below to switch.
+
+```powershell
+python -m src.ingest.download_tlc          # --yes required for >3 months
+python -m src.ingest.fetch_weather         # idempotent; re-runs skip cached zones
+python -m src.ingest.build_events          # always covers the whole year
+python -m src.batch.clean_aggregate        # --force to write despite a funnel warning
+python -m src.batch.zone_policy            # prints the 40 excluded zones
+python -m src.batch.geo_join               # first run downloads the Sedona jars
+python -m src.batch.features
+python -m src.batch.train_kmeans --k 4     # omit --k to be shown the elbow/silhouette
+python -m src.batch.evaluate
+python -m src.viz.make_maps
+```
+
+### Arguments that matter
+
+| Script | Argument | Effect |
+| --- | --- | --- |
+| *(environment)* | `TAXI_MONTHS=full` | 12 months of 2024 instead of the Q1 sample. Read by `config.py`, so it applies to **every** script — set it once per shell. |
+| `download_tlc` | `--yes` | Required to download more than the 3-month sample. Also `--months 2024-04 2024-05`, `--force`. |
+| `clean_aggregate` | `--force` | Write output even if a cleaning filter drops >10% of rows. Without it the job stops and shows the funnel. |
+| `train_kmeans` | `--k N` | Pin K. Omit it to see the elbow/silhouette disagreement and its default choice. `--skip-raw` skips the volume-vs-shape comparison sweep. |
+| `producer` | `--reset-topic` | Delete and recreate the topic — a clean demo. Required if the topic is non-empty, else the run is refused. |
+| `producer` | `--reset-only` | Reset and exit, without producing. Use this **before** starting a consumer. |
+| `producer` | `--speedup N` | Simulated seconds per real second (default 600 = 1 real sec ⇒ 10 simulated min). Also `--hours`, `--start`, `--append`, `--dry-run`. |
+| `spark_stream` | `--run-seconds N` | Stop after N seconds. Also `--fresh` (clear sink + checkpoint), `--validate`, `--ready-file`. |
+| `predict_live` | `--zone / --at` | The query. `--temp/--precip/--is-event` are accepted but ignored by this model. |
+
+### Full-year run
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:TAXI_MONTHS = "full"
+
+python -m src.ingest.download_tlc --yes
+python -m src.ingest.fetch_weather
+python -m src.ingest.build_events
+python -m src.batch.clean_aggregate
+python -m src.batch.zone_policy
+python -m src.batch.geo_join
+python -m src.batch.features
+python -m src.batch.train_kmeans --k 4
+python -m src.batch.evaluate
+python -m src.viz.make_maps
+```
+
+Or simply `.\run_pipeline_full_year.bat`. Expect roughly 600 MB of parquet and ~41M
+trips; the weather cache is rebuilt because the hourly range grows from 2,183 to 8,784
+hours per zone. **K=4 was chosen from the Q1 clustering** — re-inspect the elbow and
+silhouette output before treating it as settled for the full year.
+
+### Two-terminal streaming demo
+
+`.\run_demo.bat` does the whole sequence. By hand, in two terminals:
+
+```powershell
+# --- terminal 1: reset the topic, then start the consumer -------------------
+python -m src.stream.producer --reset-only
+spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3 `
+  src\stream\spark_stream.py --fresh --run-seconds 420 --validate
+
+# --- terminal 2: once the consumer prints "query started" -------------------
+python -m src.stream.producer --start "2024-01-10 14:00:00" --hours 6 `
+  --speedup 600 --append
+```
+
+Order matters twice. Reset the topic **before** the consumer attaches — deleting a topic
+a query is subscribed to can fault it. And start the consumer before the producer so the
+stream is seen filling live; `startingOffsets=earliest` means nothing is lost either way,
+but with an existing checkpoint the stream resumes from its stored offsets rather than
+the beginning.
+
+`spark-submit` takes the **file path** `src\stream\spark_stream.py`, not the module name.
+The equivalent module form works too and resolves the connector from `config.py`:
+
+```powershell
+python -m src.stream.spark_stream --fresh --run-seconds 420 --validate
+```
+
+Single query against the same model:
+
+```powershell
+python -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00"
+```
+
+### Kafka console smoke test
+
+Independent of the pipeline — useful to confirm the broker alone is working.
 
 ```bash
-# consumer (leave running)
-docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 --topic taxi-trips --from-beginning
-
-# producer (another terminal)
-docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
-  --bootstrap-server localhost:9092 --topic taxi-trips
+docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic taxi-trips --from-beginning
+# in another terminal
+docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic taxi-trips
 ```
 
 > **Git Bash on Windows** rewrites `/opt/kafka/...` into a Windows path and the exec
 > fails with `stat C:/Program Files/Git/opt/kafka/...: no such file or directory`.
-> Prefix with `MSYS_NO_PATHCONV=1`, or just use PowerShell / CMD.
+> Prefix with `MSYS_NO_PATHCONV=1`, or use PowerShell / CMD.
 
----
-
-## Run order
-
-> Steps 1–10 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
+### What each step produces
 
 | # | Command | Output |
 | --- | --- | --- |
 | 1 | `docker compose up -d` | Kafka broker + `taxi-trips` topic |
-| 2 | `python -m src.ingest.download_tlc` | `data/raw/yellow_tripdata_2024-0*.parquet`, `data/external/` |
+| 2 | `python -m src.ingest.download_tlc` | `data/raw/yellow_tripdata_*.parquet`, `data/external/` |
 | 3 | `python -m src.ingest.fetch_weather` | `data/external/weather.parquet` |
 | 4 | `python -m src.ingest.build_events` | `data/external/events.csv` |
 | 5 | `python -m src.batch.clean_aggregate` | `data/processed/demand.parquet` |
 | 6a | `python -m src.batch.zone_policy` | `data/processed/modeling_zones.parquet` |
 | 6b | `python -m src.batch.geo_join` | `data/processed/zone_centroids.parquet` |
 | 7 | `python -m src.batch.features` | `data/processed/features.parquet` |
-| 8 | `python -m src.batch.train_kmeans` | `models/kmeans/`, elbow + silhouette plots |
-| 9 | `python -m src.batch.evaluate` | baseline-ladder metrics table |
-| 10 | `python -m src.stream.producer --reset-topic` | replays trips into Kafka |
-| 11 | `python -m src.stream.spark_stream --validate` | windowed predicted-vs-actual demand |
-| 12 | `python -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00"` | single live query -> predicted demand |
-| 13 | `python -m src.viz.make_maps` | Folium map, GeoJSON, heatmap |
+| 8 | `python -m src.batch.train_kmeans --k 4` | `models/kmeans/`, `reports/k_sweep.csv` |
+| 9 | `python -m src.batch.evaluate` | `reports/baseline_metrics.csv` |
+| 10 | `python -m src.stream.producer` | replays trips into Kafka |
+| 11 | `spark-submit ... src\stream\spark_stream.py` | windowed predicted-vs-actual demand |
+| 12 | `python -m src.stream.predict_live` | single live query -> predicted demand |
+| 13 | `python -m src.viz.make_maps` | Folium map, GeoJSON, plots |
 
-Scripts are run from the repo root so that `import config` resolves.
-
-### Sample vs full year
-
-Default is the **2024-01…2024-03** sample. For the final run:
-
-```bash
-TAXI_MONTHS=full python -m src.ingest.download_tlc      # ~12 monthly files
-$env:TAXI_MONTHS="full"                                 # PowerShell equivalent
-```
+> All 13 steps are implemented. Remaining work is the Phase 7-8 write-up
+> (see `PROJECT_PLAN.md`).
 
 ---
 
@@ -264,6 +350,26 @@ against a prediction of **88.65**, because the model can only offer an average M
 2 a.m. An interface that quietly accepted `--is-event` would imply an event-awareness
 this model does not have. Zones outside the 223-zone modelling set are rejected with the
 reason, never answered with a silently wrong number.
+
+## Report artifacts (`reports/`)
+
+`python -m src.viz.make_maps` regenerates all of these.
+
+| File | What it shows |
+| --- | --- |
+| `k_selection.png` | Elbow and silhouette as two stacked panels (never a dual axis), with the K=7 / K=2 disagreement annotated and K=4 marked. Proposal question #1 as a figure. |
+| `zone_hour_heatmap.png` | 223 zones × 168 hours of the week, rows grouped by cluster, row-normalised so brightness is *when* a zone is busy rather than how busy. |
+| `cluster_map.html` | Folium map of the 223 zones, legend keyed by derived cluster character. |
+| `geojson/clusters.geojson` | Static zone → cluster assignment, EPSG:4326. |
+| `geojson/demand_<how>_<label>.geojson` | Predicted demand per zone at one hour-of-week (Tue 08:00, Wed 18:00, Sat 01:00, Sun 04:00). |
+| `k_sweep.csv`, `baseline_metrics.csv` | The underlying numbers. |
+
+Cluster colours use the three categorical slots that clear the all-pairs
+colour-vision gates a choropleth needs; the singleton cluster is deliberately neutral
+grey with a dashed outline, because it is an artifact rather than a peer category. Any
+accuracy figure on an artifact is captioned with its split — the map legend reports the
+**held-out** MAE for both the cluster model and `hist_avg`, and states plainly that the
+clustering is the interpretable, live-serveable model rather than the most accurate one.
 
 ## Windows gotchas already handled
 

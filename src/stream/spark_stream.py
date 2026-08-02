@@ -357,6 +357,11 @@ def parse_args() -> argparse.Namespace:
         "--validate", action="store_true",
         help="after stopping, compare streamed windows against demand.parquet",
     )
+    parser.add_argument(
+        "--ready-file",
+        help="write this file once the query is running, so a launcher can wait for "
+             "the consumer before starting the producer",
+    )
     return parser.parse_args()
 
 
@@ -415,6 +420,12 @@ def main() -> int:
 
     print(f"\nquery started (id {query.id}); "
           f"{'running ' + str(args.run_seconds) + 's' if args.run_seconds else 'Ctrl-C to stop'}")
+
+    if args.ready_file:
+        ready = Path(args.ready_file)
+        ready.parent.mkdir(parents=True, exist_ok=True)
+        ready.write_text(str(query.id), encoding="utf-8")
+        print(f"readiness marker written -> {ready}")
 
     try:
         if args.run_seconds:
