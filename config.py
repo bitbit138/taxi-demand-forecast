@@ -242,7 +242,11 @@ MAPE_EPSILON = 1.0               # guard against divide-by-zero on empty bins
 NYC_EVENT_DATES = {
     "2024-01-01": "New Year's Day celebrations",
     "2024-02-11": "Super Bowl LVIII",
-    "2024-03-17": "St. Patrick's Day Parade",
+    # The parade moves to the preceding Saturday when 17 March is a Sunday (as in
+    # 2024) so it does not clash with Mass. The parade is the demand driver; the day
+    # itself still generates evening bar traffic, so both are listed.
+    "2024-03-16": "St. Patrick's Day Parade",
+    "2024-03-17": "St. Patrick's Day",
     "2024-04-08": "Solar eclipse",
     "2024-06-30": "NYC Pride March",
     "2024-07-04": "Independence Day fireworks",

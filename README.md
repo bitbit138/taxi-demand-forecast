@@ -81,7 +81,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 
 ## Run order
 
-> Steps 1–3 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
+> Steps 1–4 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
 
 | # | Command | Output |
 | --- | --- | --- |
@@ -143,6 +143,18 @@ derived once, in `fetch_weather.py`, so `(zone_id, date_local, hour_local)` join
 directly against TLC pickup times. DST is handled by the tz database: local 02:00 on
 2024-03-10 does not exist (2183 hours per zone in Q1, not 2184), and on fall-back days
 the duplicated wall-clock hour keeps its first (EDT) reading.
+
+**Events cover the whole of 2024** even when `config.MONTHS` is the 3-month sample, so
+scaling to the full year needs no regeneration. `is_holiday` and `is_event` are
+independent booleans with separate name columns — three 2024 dates are both
+(New Year's Day, 4 July, Thanksgiving) and neither label overwrites the other.
+`is_federal_holiday` is kept separate from `is_holiday` because the NY-only observances
+(Lincoln's Birthday, Susan B. Anthony Day, Election Day) are ordinary working days for
+most people and should not be assumed to move demand the way a federal holiday does.
+
+One curated date was corrected: the **St. Patrick's Day Parade was 2024-03-16**, not the
+17th — when 17 March falls on a Sunday NYC moves the parade to the preceding Saturday.
+The parade and the day itself are now separate entries.
 
 ## Windows gotchas already handled
 
