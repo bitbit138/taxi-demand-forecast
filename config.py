@@ -173,8 +173,46 @@ KAFKA_NUM_PARTITIONS = 3
 KAFKA_REPLICATION_FACTOR = 1
 
 # Producer replay: how much faster than wall-clock the historical stream is replayed.
-REPLAY_SPEEDUP = 3600.0        # 1 simulated hour per real second
+# 600 => 1 real second == 10 simulated minutes, so a simulated hour takes 6 seconds
+# and a simulated day 2.4 minutes.
+#
+# Measured, not guessed: this client sustains ~1,000-1,400 msg/s, and a busy NYC hour
+# is ~6,600 trips. Above roughly 800x the producer becomes throughput-bound — it stops
+# pacing and emits as fast as it can serialise, so the replay silently runs slower than
+# requested and wall-clock timings differ per machine. Event-time windows are unaffected
+# (they come from the data), but a demo stops being reproducible. producer.py warns when
+# the requested speedup was not achieved. Use a large --speedup when you just want data
+# in the topic quickly rather than a paced demonstration.
+REPLAY_SPEEDUP = 600.0
 REPLAY_MAX_MESSAGES = 200_000  # safety cap for demos; None = replay everything
+REPLAY_DEFAULT_HOURS = 24      # simulated hours to replay by default; 0 = the whole range
+REPLAY_PROGRESS_EVERY = 5_000  # messages between progress lines
+
+# --------------------------------------------------------------------------- #
+# Kafka message contract — producer.py writes it, spark_stream.py parses it.
+# Both build from this list so the two sides cannot drift apart.
+# --------------------------------------------------------------------------- #
+# Event time is the pickup timestamp: naive NY-local wall-clock, exactly as stored
+# in the TLC parquet (see clean_aggregate.py). Windows are driven by this field,
+# never by producer wall-clock.
+KAFKA_EVENT_TIME_FIELD = "tpep_pickup_datetime"
+KAFKA_EVENT_TIME_FORMAT = "yyyy-MM-dd HH:mm:ss"      # Spark pattern
+KAFKA_EVENT_TIME_STRFTIME = "%Y-%m-%d %H:%M:%S"      # Python equivalent
+
+# (field name, Spark type). Order is the message field order.
+KAFKA_MESSAGE_FIELDS: list[tuple[str, str]] = [
+    ("tpep_pickup_datetime", "string"),
+    ("tpep_dropoff_datetime", "string"),
+    ("PULocationID", "int"),
+    ("DOLocationID", "int"),
+    ("passenger_count", "int"),
+    ("trip_distance", "double"),
+    ("fare_amount", "double"),
+    ("total_amount", "double"),
+]
+# Messages are keyed by pickup zone so all trips for a zone land on one partition,
+# which keeps per-zone event order intact across the 3 partitions.
+KAFKA_MESSAGE_KEY_FIELD = "PULocationID"
 
 # --------------------------------------------------------------------------- #
 # Streaming windows

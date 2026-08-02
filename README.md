@@ -81,7 +81,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 
 ## Run order
 
-> Steps 1–7 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
+> Steps 1–10 are implemented; the rest land phase by phase (see `PROJECT_PLAN.md`).
 
 | # | Command | Output |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 | 7 | `python -m src.batch.features` | `data/processed/features.parquet` |
 | 8 | `python -m src.batch.train_kmeans` | `models/kmeans/`, elbow + silhouette plots |
 | 9 | `python -m src.batch.evaluate` | baseline-ladder metrics table |
-| 10 | `python -m src.stream.producer` | replays trips into Kafka |
+| 10 | `python -m src.stream.producer --reset-topic` | replays trips into Kafka |
 | 11 | `python -m src.stream.spark_stream` | windowed predicted-vs-actual demand |
 | 12 | `python -m src.stream.predict_live` | single live query -> predicted demand |
 | 13 | `python -m src.viz.make_maps` | Folium map, GeoJSON, heatmap |
@@ -185,6 +185,36 @@ quarter would leak test-period demand into training and flatter every metric. Th
 is time-based (train `2024-01-01..2024-03-12`, test `2024-03-13..2024-03-31`) and
 deterministic — no seed involved — and is stored as `is_train` so `evaluate.py` reuses
 exactly the same split rather than re-deriving it.
+
+## Streaming demo
+
+The producer replays history as a simulated live feed. **Event time is
+`tpep_pickup_datetime` from the data itself**, never producer wall-clock, so the same
+replay yields the same windows however fast it is run.
+
+```bash
+python -m src.stream.producer --dry-run              # inspect messages, no broker
+python -m src.stream.producer --hours 1 --reset-topic   # clean 1-hour demo slice
+python -m src.stream.producer --hours 0 --speedup 86400 # whole range, as fast as possible
+```
+
+`config.REPLAY_SPEEDUP` (default 600) maps simulated to real time — 1 real second = 10
+simulated minutes — and the mapping is printed on every run. This client sustains
+~1,000–1,400 msg/s and a busy NYC hour is ~6,600 trips, so above roughly 800× the
+producer stops pacing and just emits as fast as it can; it prints a warning when the
+requested speedup was not achieved, because that makes a demo's wall-clock timings
+machine-dependent.
+
+**Re-running.** Kafka topics are append-only, so a second run appends a duplicate copy
+of the slice and would double-count in the windowed aggregation. The producer refuses to
+write to a non-empty topic unless given `--reset-topic` (delete and recreate) or
+`--append` (deliberate). Manual reset:
+
+```bash
+docker exec taxi-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+  --delete --topic taxi-trips
+docker compose up -d kafka-init --force-recreate
+```
 
 ## Windows gotchas already handled
 
