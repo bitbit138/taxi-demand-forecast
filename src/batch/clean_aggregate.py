@@ -226,16 +226,24 @@ def assert_local_wallclock(demand: DataFrame) -> None:
     print("  -> curve matches NY-local expectations (evening peak, pre-dawn trough)")
 
 
+def local_date_hour(timestamp: Column) -> tuple[Column, Column]:
+    """``(date_local, hour_local)`` from a naive NY-local wall-clock column.
+
+    Shared with ``src/stream/spark_stream.py`` so the streaming windows land on
+    exactly the same calendar cells as the batch aggregation. Naive wall-clock in,
+    NY-local date and hour out, with no conversion — see the module docstring.
+    """
+    return (
+        F.date_format(timestamp, "yyyy-MM-dd").alias("date_local"),
+        F.hour(timestamp).cast("smallint").alias("hour_local"),
+    )
+
+
 def aggregate(trips: DataFrame) -> DataFrame:
     """Aggregate surviving trips to hourly demand per pickup zone."""
-    pickup = F.col("tpep_pickup_datetime")
+    date_local, hour_local = local_date_hour(F.col("tpep_pickup_datetime"))
     return (
-        trips.select(
-            F.col("PULocationID").alias("PULocationID"),
-            # Naive wall-clock in, NY-local date/hour out — see module docstring.
-            F.date_format(pickup, "yyyy-MM-dd").alias("date_local"),
-            F.hour(pickup).cast("smallint").alias("hour_local"),
-        )
+        trips.select(F.col("PULocationID"), date_local, hour_local)
         .groupBy("PULocationID", "date_local", "hour_local")
         .agg(F.count(F.lit(1)).cast("int").alias("trip_count"))
     )

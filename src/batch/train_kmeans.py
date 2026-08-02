@@ -283,7 +283,18 @@ def save_artifacts(
     """Persist the pipeline and the prediction rule for the streaming job."""
     model.write().overwrite().save(str(config.KMEANS_MODEL_DIR))
 
-    zone_clusters = assigned.select("zone_id", "cluster", "total_demand")
+    # zone_mean_demand is the zone's own level: mean trip_count over TRAIN rows.
+    # Saved explicitly rather than derived as total_demand/168 because the two differ
+    # slightly (the DST hour-of-week has one fewer observation), and the streaming
+    # forecaster must reproduce evaluate.py's numbers exactly.
+    zone_levels = (
+        features.filter(F.col("is_train"))
+        .groupBy("zone_id")
+        .agg(F.avg("trip_count").alias("zone_mean_demand"))
+    )
+    zone_clusters = assigned.select("zone_id", "cluster", "total_demand").join(
+        F.broadcast(zone_levels), on="zone_id", how="left"
+    )
     zone_clusters.coalesce(1).write.mode("overwrite").parquet(
         str(config.ZONE_CLUSTERS_PARQUET)
     )

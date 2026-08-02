@@ -96,7 +96,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh \
 | 8 | `python -m src.batch.train_kmeans` | `models/kmeans/`, elbow + silhouette plots |
 | 9 | `python -m src.batch.evaluate` | baseline-ladder metrics table |
 | 10 | `python -m src.stream.producer --reset-topic` | replays trips into Kafka |
-| 11 | `python -m src.stream.spark_stream` | windowed predicted-vs-actual demand |
+| 11 | `python -m src.stream.spark_stream --validate` | windowed predicted-vs-actual demand |
 | 12 | `python -m src.stream.predict_live` | single live query -> predicted demand |
 | 13 | `python -m src.viz.make_maps` | Folium map, GeoJSON, heatmap |
 
@@ -215,6 +215,32 @@ docker exec taxi-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localho
   --delete --topic taxi-trips
 docker compose up -d kafka-init --force-recreate
 ```
+
+### The streaming job
+
+```bash
+python -m src.stream.producer --start "2024-01-10 14:00:00" --hours 6 \
+       --speedup 86400 --reset-topic
+python -m src.stream.spark_stream --run-seconds 120 --fresh --validate
+```
+
+`spark_stream.py` imports `build_filters()` and `local_date_hour()` from
+`clean_aggregate.py` rather than re-implementing them, and applies the same 223-zone
+modelling set, so streamed windows are comparable to `demand.parquet` cell for cell.
+`--validate` checks exactly that and refuses to continue on any disagreement.
+
+| Choice | Value | Why |
+| --- | --- | --- |
+| Event time | `tpep_pickup_datetime` from the payload | windows come from the data, so a replay is reproducible at any speed |
+| Window | tumbling 1 hour | same grain as the batch aggregation, so the two are directly comparable |
+| Watermark | 2 hours | a trip is recorded at dropoff, so lateness ≈ trip duration; p99.9 is 1.91 h and only 0.092% exceed 2 h |
+| Output mode | append | emits each window once, when final — `update` re-emits partial windows with no marker for which is final, making batch comparison impossible; append is also the only mode the parquet sink supports |
+| Model | loaded from `models/`, never retrained | the live forecaster is the same artifact `evaluate.py` scored |
+
+The live rule is **cluster shape × zone level**, the interpretable model — deliberately
+not `hist_avg`, which is more accurate but has no compact live representation
+(37,464 cells versus 895). With a 2-hour watermark the final ~2 simulated hours of any
+replay never close, so replay more hours than you intend to validate.
 
 ## Windows gotchas already handled
 
