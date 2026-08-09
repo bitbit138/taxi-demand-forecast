@@ -1,22 +1,30 @@
-"""Single-query live forecaster: ``(zone_id, timestamp) -> predicted demand``.
+"""Single-query live forecaster: ``(zone_id, timestamp, conditions) -> demand``.
 
-Loads the same artifacts ``spark_stream.py`` serves — ``zone_clusters.parquet`` and
-``cluster_demand.parquet`` — and applies the identical arithmetic, so a single query
-returns exactly the number the stream and the batch produce for the same
-``(zone, hour-of-week)``. Pandas rather than Spark: the artifacts are a few hundred
-rows and a demo query should answer instantly, not spend 20 seconds starting a JVM.
+Serves **two models side by side**, and says which is which:
 
-**The model is a function of ``(zone, hour-of-week)`` and nothing else.** It is
-K-Means over L1-normalised weekly demand profiles, so it knows a zone's *level* and its
-cluster's *temporal shape*. It has no weather term and no event term. ``--temp``,
-``--precip`` and ``--is-event`` are accepted so the interface is stable for a future
-feature-based model, but they are **ignored**, and every response that supplies one says
-so in as many words. That matters: on New Year's morning the East Village saw 440 trips
-at 02:00 against a prediction of 88.65, because the model can only offer an average
-Monday 2 a.m. An interface that silently accepted ``--is-event`` would imply an
-event-awareness this model does not have.
+* **Shape model** — cluster shape x zone level, the exact arithmetic
+  ``spark_stream.py`` serves, loaded from the same ``zone_clusters.parquet`` /
+  ``cluster_demand.parquet``. A single query returns exactly the number the stream
+  and the batch produce for the same ``(zone, hour-of-week)``. This is the
+  interpretable model and the one validated against the streaming output.
+
+* **Conditions model** — the linear weather/events model exported by
+  ``src/batch/ablation.py`` (``models/conditions_model.json`` +
+  ``models/hist_avg.parquet``). It actually **uses** ``--temp``, ``--precip`` and
+  ``--is-event``: rain, temperature and event/holiday flags shift the forecast by
+  fitted, test-set-verified coefficients. Defaults when a condition is not given
+  are stated in the output: monthly-normal temperature, no rain, and event/holiday
+  flags looked up from ``events.csv`` for the query date.
+
+Pandas rather than Spark: the artifacts are small and a demo query should answer
+instantly, not spend 20 seconds starting a JVM. The ablation run proves the JSON
+arithmetic matches Spark's own predictions to ~1e-13 before exporting.
+
+If the conditions model has not been trained yet, the tool degrades to the shape
+model alone and says the condition inputs were **ignored** — never silently.
 
     python -m src.stream.predict_live --zone 79  --at "2024-01-13 01:00"
+    python -m src.stream.predict_live --zone 161 --at "2024-11-28 15:00" --precip 4
     python -m src.stream.predict_live --zone 161 --at "2024-01-10 15:00" --json
     python -m src.stream.predict_live --validate
 """
@@ -25,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -34,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config  # noqa: E402
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-IGNORED_ARGS = ("temp", "precip", "is_event")
+CONDITION_ARGS = ("temp", "precip", "is_event")
 
 
 def how_label(hour_of_week: int) -> str:
@@ -129,6 +138,21 @@ class Forecaster:
         )
         self._characters = self._describe_clusters()
 
+        # Conditions model (optional): trained by src/batch/ablation.py. Absent ->
+        # the tool degrades to the shape model and says so.
+        self.conditions: dict | None = None
+        self.hist_avg: pd.Series | None = None
+        if config.CONDITIONS_MODEL_JSON.exists() and config.HIST_AVG_PARQUET.exists():
+            self.conditions = json.loads(config.CONDITIONS_MODEL_JSON.read_text())
+            self.hist_avg = pd.read_parquet(config.HIST_AVG_PARQUET).set_index(
+                ["zone_id", "hour_local", "dow"]
+            )["hist_avg_demand"]
+
+        # Event calendar for default flags — covers all of 2024 by construction.
+        self.events: pd.DataFrame | None = None
+        if Path(config.EVENTS_CSV).exists():
+            self.events = pd.read_csv(config.EVENTS_CSV).set_index("date_local")
+
     def _describe_clusters(self) -> dict[int, dict]:
         """Label each cluster from its own shape — never hard-coded.
 
@@ -185,6 +209,116 @@ class Forecaster:
             "predicted_demand_rounded": round(predicted, 2),
         }
 
+    def predict_conditions(
+        self,
+        zone_id: int,
+        when: pd.Timestamp,
+        temp_c: float | None = None,
+        precip_mm: float | None = None,
+        force_event: bool = False,
+    ) -> dict | None:
+        """Weather/events-aware forecast from the exported linear model.
+
+        Applies exactly the coefficients ``ablation.py`` fitted and verified
+        against Spark. Returns None when the conditions model is not trained.
+        Missing inputs fall back to stated defaults: monthly-normal temperature,
+        zero precipitation, and event/holiday flags from ``events.csv`` for the
+        query date (``force_event=True`` overrides the calendar).
+        """
+        if self.conditions is None or self.hist_avg is None:
+            return None
+
+        dow = when.weekday()
+        hour = when.hour
+        how = hour_of_week(when)
+        try:
+            hist = float(self.hist_avg.loc[(zone_id, hour, dow)])
+        except KeyError:
+            raise LookupError(
+                f"no hist_avg for zone {zone_id}, hour {hour}, dow {dow}"
+            ) from None
+
+        # Defaults, each with its provenance recorded for the output.
+        assumed: dict[str, str] = {}
+        if temp_c is None:
+            normals = self.conditions["monthly_temp_normals_c"]
+            temp_c = float(normals[str(when.month)])
+            assumed["temp_c"] = f"{temp_c:.1f} (monthly normal for {when.month:02d})"
+        if precip_mm is None:
+            precip_mm = float(self.conditions["default_precip_mm"])
+            assumed["precip_mm"] = f"{precip_mm:g} (no rain assumed)"
+
+        date_key = when.strftime("%Y-%m-%d")
+        holiday = fedhol = event = False
+        event_name = holiday_name = ""
+        if self.events is not None and date_key in self.events.index:
+            row = self.events.loc[date_key]
+            holiday = bool(row["is_holiday"])
+            fedhol = bool(row["is_federal_holiday"])
+            event = bool(row["is_event"])
+            holiday_name = "" if pd.isna(row.get("holiday_name")) else str(row["holiday_name"])
+            event_name = "" if pd.isna(row.get("event_name")) else str(row["event_name"])
+            assumed["flags"] = f"from events.csv for {date_key}"
+        else:
+            assumed["flags"] = f"{date_key} not in events.csv — all flags False"
+        if force_event:
+            event = True
+            assumed["flags"] += " (event forced by --is-event)"
+
+        two_pi = 2.0 * math.pi
+        temp_dev = temp_c - float(self.conditions["train_mean_temp_c"])
+        features = {
+            "hist_avg_demand": hist,
+            "hour_sin": math.sin(two_pi * hour / 24.0),
+            "hour_cos": math.cos(two_pi * hour / 24.0),
+            "dow_sin": math.sin(two_pi * dow / 7.0),
+            "dow_cos": math.cos(two_pi * dow / 7.0),
+            "weekend_d": 1.0 if dow in (5, 6) else 0.0,
+            "temp_c": temp_c,
+            "precip_mm": precip_mm,
+            "temp_dev_x_hist": temp_dev * hist,
+            "precip_x_hist": precip_mm * hist,
+            "holiday_d": 1.0 if holiday else 0.0,
+            "fedhol_d": 1.0 if fedhol else 0.0,
+            "event_d": 1.0 if event else 0.0,
+            "fedhol_x_hist": (1.0 if fedhol else 0.0) * hist,
+            "event_x_hist": (1.0 if event else 0.0) * hist,
+        }
+        for k in range(1, config.FOURIER_TERMS + 1):
+            angle = two_pi * k * how / float(config.HOURS_PER_WEEK)
+            features[f"how_sin_{k}"] = math.sin(angle)
+            features[f"how_cos_{k}"] = math.cos(angle)
+
+        coef = self.conditions["coefficients"]
+        contribution = {name: coef[name] * features[name] for name in coef}
+        raw = float(self.conditions["intercept"]) + sum(contribution.values())
+        predicted = max(0.0, raw)
+
+        weather_terms = ("temp_c", "precip_mm", "temp_dev_x_hist", "precip_x_hist")
+        event_terms = ("holiday_d", "fedhol_d", "event_d", "fedhol_x_hist",
+                       "event_x_hist")
+        weather_delta = sum(contribution[t] for t in weather_terms if t in contribution)
+        event_delta = sum(contribution[t] for t in event_terms if t in contribution)
+
+        return {
+            "predicted_demand": predicted,
+            "predicted_demand_rounded": round(predicted, 2),
+            "clamped": raw < 0.0,
+            "hist_avg_base": hist,
+            "weather_delta": weather_delta,
+            "event_delta": event_delta,
+            "calendar_delta": raw - hist - weather_delta - event_delta,
+            "inputs": {
+                "temp_c": temp_c, "precip_mm": precip_mm,
+                "is_holiday": holiday, "is_federal_holiday": fedhol,
+                "is_event": event,
+                "holiday_name": holiday_name, "event_name": event_name,
+            },
+            "assumed": assumed,
+            "model": self.conditions["learner"],
+            "feature_set": self.conditions["feature_set"],
+        }
+
     def is_served(self, zone_id: int) -> bool:
         return bool((self.zones["zone_id"] == zone_id).any())
 
@@ -218,9 +352,14 @@ def render(result: dict, ignored: dict) -> str:
     """Human-readable answer with its provenance."""
     flat = result["zone_mean_demand"]
     multiplier = result["share_vs_flat"]
+    conditions = result.get("conditions")
+
+    headline = result["predicted_demand_rounded"]
+    if conditions:
+        headline = conditions["predicted_demand_rounded"]
     lines = [
         "=" * 72,
-        f"PREDICTED DEMAND  {result['predicted_demand_rounded']:.2f} trips",
+        f"PREDICTED DEMAND  {headline:.2f} trips",
         "=" * 72,
         f"  query            zone {result['zone_id']} "
         f"({result['zone_name']}, {result['borough']})",
@@ -228,7 +367,8 @@ def render(result: dict, ignored: dict) -> str:
         f"= {result['hour_of_week_label']} (hour-of-week "
         f"{result['hour_of_week']})",
         "",
-        "  how it got there",
+        f"  SHAPE MODEL      {result['predicted_demand_rounded']:.2f} trips "
+        "(what spark_stream.py serves)",
         f"    cluster        {result['cluster']} — {result['cluster_character']}",
         f"                   {result['cluster_n_zones']} zones, "
         f"peaks {result['cluster_peak']}",
@@ -239,14 +379,43 @@ def render(result: dict, ignored: dict) -> str:
         f"= {result['predicted_demand']:.4f}",
         f"    i.e. {multiplier:.2f}x this zone's flat hourly average",
     ]
-    if ignored:
+
+    if conditions:
+        inputs = conditions["inputs"]
+        flags = []
+        if inputs["is_federal_holiday"]:
+            flags.append(f"federal holiday ({inputs['holiday_name']})")
+        elif inputs["is_holiday"]:
+            flags.append(f"holiday ({inputs['holiday_name']})")
+        if inputs["is_event"]:
+            flags.append(f"event ({inputs['event_name'] or 'forced'})")
+        lines += [
+            "",
+            f"  CONDITIONS MODEL {conditions['predicted_demand_rounded']:.2f} trips "
+            "(weather/events-aware — the headline)",
+            f"    base           {conditions['hist_avg_base']:.2f} historical average "
+            "for this (zone, hour, weekday)",
+            f"    calendar       {conditions['calendar_delta']:+.2f}",
+            f"    weather        {conditions['weather_delta']:+.2f}   "
+            f"(temp {inputs['temp_c']:.1f} C, precip {inputs['precip_mm']:g} mm)",
+            f"    events         {conditions['event_delta']:+.2f}   "
+            f"({', '.join(flags) if flags else 'no holiday, no event'})",
+        ]
+        if conditions["clamped"]:
+            lines.append("    clamped        raw prediction was negative -> 0")
+        if conditions["assumed"]:
+            lines.append("    defaults used  "
+                         + "; ".join(f"{k}: {v}" for k, v in conditions["assumed"].items()))
+        lines.append(f"    fitted by      src/batch/ablation.py "
+                     f"({conditions['feature_set']})")
+    elif ignored:
         lines += [
             "",
             "  IGNORED INPUTS",
             f"    {', '.join(f'{k}={v}' for k, v in ignored.items())}",
-            "    This model is K-Means over weekly demand SHAPE — a function of",
-            "    (zone, hour-of-week) only. It has no weather or event term, so the",
-            "    values above changed nothing. Accepted for forward compatibility.",
+            "    The conditions model is not trained (run python -m src.batch.ablation),",
+            "    so only the K-Means shape model is available — a function of",
+            "    (zone, hour-of-week) only. The values above changed nothing.",
         ]
     lines.append("=" * 72)
     return "\n".join(lines)
@@ -319,6 +488,37 @@ def validate(forecaster: Forecaster) -> bool:
     print()
     print("   " + reject(forecaster, 103).replace("\n", "\n   "))
 
+    # --- 4. the conditions model responds to conditions -----------------------
+    print("\n4. Conditions model uses weather and events (novelty #1, live)")
+    if forecaster.conditions is None:
+        print("   SKIPPED — not trained. Run: python -m src.batch.ablation")
+    else:
+        when = pd.Timestamp("2024-11-20 18:00")  # ordinary Wednesday evening
+        dry = forecaster.predict_conditions(161, when, precip_mm=0.0)
+        wet = forecaster.predict_conditions(161, when, precip_mm=5.0)
+        coef = forecaster.conditions["coefficients"]["precip_x_hist"]
+        moved = wet["predicted_demand"] != dry["predicted_demand"]
+        right_way = (wet["predicted_demand"] > dry["predicted_demand"]) == (coef > 0)
+        print(f"   zone 161, {when:%a %H:%M}: dry {dry['predicted_demand']:.2f} vs "
+              f"5 mm rain {wet['predicted_demand']:.2f} "
+              f"({wet['predicted_demand'] - dry['predicted_demand']:+.2f})")
+        print(f"   prediction moves with rain: {moved}; direction matches the "
+              f"fitted coefficient ({coef:+.5f}): {right_way}")
+        ok = ok and moved and right_way
+
+        plain = forecaster.predict_conditions(161, when)
+        forced = forecaster.predict_conditions(161, when, force_event=True)
+        event_moved = forced["predicted_demand"] != plain["predicted_demand"]
+        print(f"   --is-event shifts the forecast: {event_moved} "
+              f"({plain['predicted_demand']:.2f} -> {forced['predicted_demand']:.2f})")
+        ok = ok and event_moved
+
+        thanksgiving = forecaster.predict_conditions(161, pd.Timestamp("2024-11-28 15:00"))
+        auto = thanksgiving["inputs"]["is_federal_holiday"] and thanksgiving["inputs"]["is_event"]
+        print(f"   2024-11-28 auto-flagged from events.csv "
+              f"(federal holiday + event): {auto}")
+        ok = ok and auto
+
     print("\n" + "=" * 78)
     print("  RESULT:", "PASS" if ok else "FAIL")
     print("=" * 78)
@@ -331,10 +531,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--at", help="timestamp, e.g. '2024-01-13 01:00' (NY local)")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     parser.add_argument("--validate", action="store_true", help="run the checks")
-    # Accepted for forward compatibility; the current model ignores them entirely.
-    parser.add_argument("--temp", type=float, help="temperature C (IGNORED by this model)")
-    parser.add_argument("--precip", type=float, help="precipitation mm (IGNORED)")
-    parser.add_argument("--is-event", action="store_true", help="event flag (IGNORED)")
+    # Served by the conditions model (models/conditions_model.json). If that model
+    # has not been trained yet, they are reported as ignored — never silently.
+    parser.add_argument("--temp", type=float,
+                        help="temperature C (default: monthly normal)")
+    parser.add_argument("--precip", type=float,
+                        help="precipitation mm (default: 0, no rain)")
+    parser.add_argument("--is-event", action="store_true",
+                        help="force the event flag on (default: events.csv lookup)")
     return parser.parse_args()
 
 
@@ -357,14 +561,26 @@ def main() -> int:
     when = pd.Timestamp(args.at)
     result = forecaster.predict(args.zone, when)
 
-    ignored = {
-        name: getattr(args, name)
-        for name in IGNORED_ARGS
-        if getattr(args, name) not in (None, False)
-    }
-    result["ignored_inputs"] = ignored
-    result["model_uses"] = ["zone_id", "hour_of_week"]
-    result["model_ignores"] = ["weather", "events", "holidays"]
+    conditions = forecaster.predict_conditions(
+        args.zone, when,
+        temp_c=args.temp, precip_mm=args.precip, force_event=args.is_event,
+    )
+    ignored: dict = {}
+    if conditions is not None:
+        result["conditions"] = conditions
+        result["models"] = {
+            "shape": "K-Means cluster shape x zone level (served by the stream)",
+            "conditions": "linear weather/events model (headline; src/batch/ablation.py)",
+        }
+    else:
+        ignored = {
+            name: getattr(args, name)
+            for name in CONDITION_ARGS
+            if getattr(args, name) not in (None, False)
+        }
+        result["ignored_inputs"] = ignored
+        result["model_uses"] = ["zone_id", "hour_of_week"]
+        result["model_ignores"] = ["weather", "events", "holidays"]
 
     if args.json:
         print(json.dumps(result, indent=2, default=float))

@@ -134,6 +134,12 @@ echo   With a 2-hour watermark the last ~2 simulated hours never close, so a
 echo   %DEMO_HOURS%-hour replay yields ~%DEMO_HOURS% minus 3 closed windows.
 echo   Output lands in data\processed\stream_predictions\.
 echo.
+echo   Single-query forecaster (same artifacts, instant, weather/events-aware):
+echo     %VENV_PY% -m src.stream.predict_live --zone 161 --at "2024-11-28 15:00"
+echo         (Thanksgiving is flagged automatically from events.csv)
+echo     %VENV_PY% -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00" --precip 5
+echo         (5 mm of rain shifts the forecast by the fitted coefficient)
+echo.
 endlocal
 exit /b 0
 
