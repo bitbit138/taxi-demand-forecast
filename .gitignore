@@ -10,10 +10,9 @@ data/external/*
 !data/**/sample_*.parquet
 
 # --- Models & reports -------------------------------------------------------
-models/*
-!models/.gitkeep
-reports/*
-!reports/.gitkeep
+# Committed on purpose: the saved models and report artifacts ARE the submitted
+# results, and all of them are small (the largest, reports/geojson, is ~25 MB).
+# Parquet checksum noise (*.crc, _SUCCESS) is still excluded globally below.
 
 # --- Spark / Ivy ------------------------------------------------------------
 .ivy2/

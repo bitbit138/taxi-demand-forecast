@@ -1,0 +1,25 @@
+subset,method,n,mae,rmse,wape,mape_nonzero,mean_pred
+all,"Global mean (naive floor)",399600,31.513303,60.404771,1.477287,7.386112,19.455241
+all,"Per-zone mean",399600,13.463961,38.803008,0.631166,1.879875,19.455241
+all,"Historical avg (zone,hour,dow)",399600,5.436932,18.196461,0.254874,0.511756,19.398118
+all,"Moving avg (same hour-of-week, 4w)",399600,5.141498,17.633456,0.241024,0.560956,21.881346
+all,"Weighted MA (4w, linear)",399600,5.329959,18.414864,0.249859,0.579540,21.990927
+all,"EWMA (4w, alpha=0.3)",399600,5.279363,18.185804,0.247487,0.575281,21.971448
+all,"Cluster mean (K-Means, raw pooled)",399600,20.222662,49.531877,0.948002,3.732479,19.398118
+all,"Cluster shape x zone level (K-Means)",399600,7.586728,24.605934,0.355652,0.712011,19.439921
+zero,"Global mean (naive floor)",182125,19.455241,19.455241,,,19.455241
+zero,"Per-zone mean",182125,0.928857,6.019786,,,0.928857
+zero,"Historical avg (zone,hour,dow)",182125,0.349647,2.013979,,,0.349647
+zero,"Moving avg (same hour-of-week, 4w)",182125,0.425355,2.065905,,,0.425355
+zero,"Weighted MA (4w, linear)",182125,0.429249,1.938016,,,0.429249
+zero,"EWMA (4w, alpha=0.3)",182125,0.428640,1.946015,,,0.428640
+zero,"Cluster mean (K-Means, raw pooled)",182125,6.393995,19.635614,,,6.393995
+zero,"Cluster shape x zone level (K-Means)",182125,0.433376,1.892423,,,0.433376
+nonzero,"Global mean (naive floor)",217475,41.611358,79.921204,1.061614,7.386112,19.455241
+nonzero,"Per-zone mean",217475,23.961516,52.309235,0.611321,1.879875,34.970209
+nonzero,"Historical avg (zone,hour,dow)",217475,9.697292,24.596835,0.247403,0.511756,35.350309
+nonzero,"Moving avg (same hour-of-week, 4w)",217475,9.091045,23.827736,0.231936,0.560956,39.849721
+nonzero,"Weighted MA (4w, linear)",217475,9.434072,24.898755,0.240688,0.579540,40.047811
+nonzero,"EWMA (4w, alpha=0.3)",217475,9.341613,24.586933,0.238329,0.575281,40.012528
+nonzero,"Cluster mean (K-Means, raw pooled)",217475,31.803515,64.692601,0.811390,3.732479,30.288454
+nonzero,"Cluster shape x zone level (K-Means)",217475,13.577321,33.309011,0.346393,0.712011,35.357001

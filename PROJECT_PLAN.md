@@ -26,10 +26,10 @@ and modeling.
 
 ## Phase 1 — Environment & repo
 
-- [ ] Install **Java 17** (Temurin), **Python 3.11** + venv, **Docker + Docker Compose** (Windows: WSL2 backend).
-- [ ] `requirements.txt`: `pyspark==3.5.3`, `apache-sedona`, `geopandas`, `shapely`, `folium`, `requests`, `pandas`, `pyarrow`, `holidays`.
-- [ ] Spark launched with the matching Kafka connector `org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3` and the Sedona jars for Spark 3.5 (`sedona-spark-shaded-3.5_2.12` + the paired `geotools-wrapper` — take the exact geotools-wrapper string from Sedona's install-python page).
-- [ ] Scaffold the repo:
+- [x] Install **Java 17** (Temurin), **Python 3.11** + venv, **Docker + Docker Compose** (Windows: WSL2 backend).
+- [x] `requirements.txt`: `pyspark==3.5.3`, `apache-sedona`, `geopandas`, `shapely`, `folium`, `requests`, `pandas`, `pyarrow`, `holidays`.
+- [x] Spark launched with the matching Kafka connector `org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3` and the Sedona jars for Spark 3.5 (`sedona-spark-shaded-3.5_2.12` + the paired `geotools-wrapper` — take the exact geotools-wrapper string from Sedona's install-python page).
+- [x] Scaffold the repo:
 ```
 taxi-demand-forecast/
   docker-compose.yml          # Kafka (KRaft, no Zookeeper)
@@ -40,23 +40,23 @@ taxi-demand-forecast/
   src/stream/  producer.py  spark_stream.py  predict_live.py
   src/viz/     make_maps.py
 ```
-- [ ] `docker-compose.yml` = single Kafka broker in KRaft mode; topic `taxi-trips`.
-- [ ] Smoke test: `docker compose up`, produce & consume one console message.
+- [x] `docker-compose.yml` = single Kafka broker in KRaft mode; topic `taxi-trips`.
+- [x] Smoke test: `docker compose up`, produce & consume one console message.
 
 ## Phase 2 — Data acquisition (`src/ingest/`)
 
-- [ ] **`download_tlc.py`** — pull yellow-taxi monthly parquet from
+- [x] **`download_tlc.py`** — pull yellow-taxi monthly parquet from
   `https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_YYYY-MM.parquet` for the months in `config.py` → `data/raw/`.
-- [ ] Download `taxi_zone_lookup.csv` + the Taxi Zone **shapefile** into `data/external/`.
-- [ ] **`fetch_weather.py`** — Open-Meteo historical archive (free, no key), one call per **zone centroid** covering the whole date range, cached to `data/external/weather.parquet`. Batch + sleep for rate limits.
+- [x] Download `taxi_zone_lookup.csv` + the Taxi Zone **shapefile** into `data/external/`.
+- [x] **`fetch_weather.py`** — Open-Meteo historical archive (free, no key), one call per **zone centroid** covering the whole date range, cached to `data/external/weather.parquet`. Batch + sleep for rate limits.
   `https://archive-api.open-meteo.com/v1/archive?latitude=..&longitude=..&start_date=..&end_date=..&hourly=temperature_2m,precipitation`
-- [ ] **`build_events.py`** — `holidays` lib + a short curated list of big NYC event dates → `events.csv` with `is_holiday` / `is_event` flags.
+- [x] **`build_events.py`** — `holidays` lib + a short curated list of big NYC event dates → `events.csv` with `is_holiday` / `is_event` flags.
 
 ## Phase 3 — Batch processing in Spark (`src/batch/`)
 
-- [ ] **`clean_aggregate.py`** — read `data/raw/*.parquet`. **Handle schema drift** with an explicit column select + casts (2025+ files add `cbd_congestion_fee`; casings vary by year). Filter bad rows (non-positive fare/distance, absurd distances, out-of-range passenger count, pickup ≥ dropoff, out-of-range timestamps). Drop zones **264/265** (Unknown/N/A). Aggregate to `(PULocationID, date, hour) -> trip_count` → `data/processed/demand.parquet`.
-- [ ] **`geo_join.py`** — Sedona (`SedonaContext.create(spark)`): read the zone shapefile, compute **zone centroids** (for the weather join) and keep polygons (for maps). *(Trips already carry LocationID, so trip→zone is a lookup; the real spatial work is polygon → centroid → nearest weather point + map rendering — state this in the report.)*
-- [ ] **`features.py`** — build the modeling table:
+- [x] **`clean_aggregate.py`** — read `data/raw/*.parquet`. **Handle schema drift** with an explicit column select + casts (2025+ files add `cbd_congestion_fee`; casings vary by year). Filter bad rows (non-positive fare/distance, absurd distances, out-of-range passenger count, pickup ≥ dropoff, out-of-range timestamps). Drop zones **264/265** (Unknown/N/A). Aggregate to `(PULocationID, date, hour) -> trip_count` → `data/processed/demand.parquet`.
+- [x] **`geo_join.py`** — Sedona (`SedonaContext.create(spark)`): read the zone shapefile, compute **zone centroids** (for the weather join) and keep polygons (for maps). *(Trips already carry LocationID, so trip→zone is a lookup; the real spatial work is polygon → centroid → nearest weather point + map rendering — state this in the report.)*
+- [x] **`features.py`** — build the modeling table:
   - **zero-fill** empty `(zone, hour)` bins so each zone's series is continuous;
   - calendar features + **cyclical sin/cos** encodings of hour and day-of-week + a small set of **Fourier terms** on the hour-of-week signal (daily/weekly periodicity);
   - weather `temp`/`precip` joined on zone+hour (**align timezones**: TLC = America/New_York, Open-Meteo = UTC);
@@ -66,30 +66,30 @@ taxi-demand-forecast/
 
 ## Phase 4 — Modeling (`src/batch/train_kmeans.py`, `evaluate.py`)
 
-- [ ] Time-based **train/test split** (train earlier weeks, test later), fixed seed.
-- [ ] **`train_kmeans.py`** — `VectorAssembler` + `StandardScaler` + `KMeans`; sweep **K=2…12** for WCSS (elbow) and **silhouette**; pick K from those curves; save the model to `models/`. Compute per-cluster mean demand → the prediction rule.
-- [ ] **`evaluate.py`** — build the **baseline ladder** (historical average, moving average, weighted MA, exponentially-weighted MA) plus the cluster-mean prediction, and score every method with **MAE, RMSE, MAPE** on the test split. Emit one comparison table (rows = methods, columns = metrics).
+- [x] Time-based **train/test split** (train earlier weeks, test later), fixed seed.
+- [x] **`train_kmeans.py`** — `VectorAssembler` + `StandardScaler` + `KMeans`; sweep **K=2…12** for WCSS (elbow) and **silhouette**; pick K from those curves; save the model to `models/`. Compute per-cluster mean demand → the prediction rule.
+- [x] **`evaluate.py`** — build the **baseline ladder** (historical average, moving average, weighted MA, exponentially-weighted MA) plus the cluster-mean prediction, and score every method with **MAE, RMSE, MAPE** on the test split. Emit one comparison table (rows = methods, columns = metrics).
 
 ## Phase 5 — Streaming: Kafka + Spark (`src/stream/`) — the graded core
 
-- [ ] **`producer.py`** — replay `data/raw` rows as JSON to `taxi-trips`, **time-accelerated**, event-time = `tpep_pickup_datetime`, with a defined message schema.
-- [ ] **`spark_stream.py`** — Structured Streaming from Kafka (launch with the `--packages` connector): parse JSON, reapply cleaning filters, set a **watermark** on event-time, **tumbling-window** demand per zone, write to console + parquet sinks. **Load the saved batch model** and emit **predicted vs actual** per window — the live path reuses the batch artifact and never retrains.
+- [x] **`producer.py`** — replay `data/raw` rows as JSON to `taxi-trips`, **time-accelerated**, event-time = `tpep_pickup_datetime`, with a defined message schema.
+- [x] **`spark_stream.py`** — Structured Streaming from Kafka (launch with the `--packages` connector): parse JSON, reapply cleaning filters, set a **watermark** on event-time, **tumbling-window** demand per zone, write to console + parquet sinks. **Load the saved batch model** and emit **predicted vs actual** per window — the live path reuses the batch artifact and never retrains.
 
 ## Phase 6 — Real-time live prediction (novelty #2) (`src/stream/predict_live.py`)
 
-- [ ] Load the same saved model + scalers; take a live query `(zone, timestamp, temp, precip, is_event)` → build the feature vector → assign cluster → return **predicted demand** for the next window.
+- [x] Load the same saved model + scalers; take a live query `(zone, timestamp, temp, precip, is_event)` → build the feature vector → assign cluster → return **predicted demand** for the next window.
 
 ## Phase 7 — Evaluation & answering the open questions
 
-- [ ] Produce: elbow plot, silhouette score, the **baseline-ladder metrics table**, cluster **maps** (Folium **and** a per-time-window **GeoJSON** export), and a `zone × hour` demand heatmap.
-- [ ] Answer the four proposal questions with evidence: best K (elbow/silhouette); do weather & events beat trips-only (**ablation**: train/eval with vs without those features); is streaming worth it vs batch (note streaming latency/throughput); multi-zone trips (assigned to **pickup** zone — state it).
+- [x] Produce: elbow plot, silhouette score, the **baseline-ladder metrics table**, cluster **maps** (Folium **and** a per-time-window **GeoJSON** export), and a `zone × hour` demand heatmap.
+- [x] Answer the four proposal questions with evidence: best K (elbow/silhouette); do weather & events beat trips-only (**ablation**: train/eval with vs without those features); is streaming worth it vs batch (note streaming latency/throughput); multi-zone trips (assigned to **pickup** zone — state it).
 
 ## Phase 8 — Deliverables & submission
 
-- [ ] **Results deck** (reuse the English styling of your proposal deck): problem → pipeline → clustering result → baseline-ladder metrics → live-prediction demo → answers to open questions → conclusions.
-- [ ] **Short report** referencing the three proposal papers (Sedona/GeoSpark, DMVST-Net, NYC-taxi VAST) — what you used from each.
-- [ ] **`README.md`**: exact run order — `docker compose up` → download → weather → batch clean/geo/features → train → evaluate → producer → stream — with pinned versions.
-- [ ] Reproducibility: fixed seeds, `requirements.txt`, a small sample committed (not raw parquet).
+- [x] **Presentation** — delivered in class; the final submission is code + results (REPORT.md, notebook, reports/) via the course site.
+- [x] **Short report** referencing the three proposal papers (Sedona/GeoSpark, DMVST-Net, NYC-taxi VAST) — what you used from each.
+- [x] **`README.md`**: exact run order — `docker compose up` → download → weather → batch clean/geo/features → train → evaluate → producer → stream — with pinned versions.
+- [x] Reproducibility: fixed seeds, `requirements.txt`, a small sample committed (not raw parquet).
 - [ ] Submit via **Moodle** on time.
 
 ---

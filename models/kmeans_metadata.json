@@ -1,0 +1,212 @@
+{
+  "chosen_k": 5,
+  "chosen_by": "manual --k override",
+  "selection_note": "K changed from 4 to 5. K=4 was selected on 3 month(s) (2024-01..2024-03); K=5 is selected on 12 month(s) (2024-01..2024-12).",
+  "selection_changed": true,
+  "supersedes": {
+    "chosen_k": 4,
+    "chosen_by": "manual --k override",
+    "data_range": {
+      "months": [
+        "2024-01",
+        "2024-02",
+        "2024-03"
+      ],
+      "start": "2024-01-01",
+      "end": "2024-03-31"
+    }
+  },
+  "k_suggested_by_elbow": 5,
+  "k_suggested_by_silhouette": 2,
+  "criteria_agree": false,
+  "seed": 42,
+  "normalization": "L1 row-normalisation (demand share per hour-of-week)",
+  "profile_shape": [
+    225,
+    168
+  ],
+  "train_only": true,
+  "data_range": {
+    "months": [
+      "2024-01",
+      "2024-02",
+      "2024-03",
+      "2024-04",
+      "2024-05",
+      "2024-06",
+      "2024-07",
+      "2024-08",
+      "2024-09",
+      "2024-10",
+      "2024-11",
+      "2024-12"
+    ],
+    "start": "2024-01-01",
+    "end": "2024-12-31"
+  },
+  "spark_version": "3.5.3",
+  "k_range": [
+    2,
+    12
+  ],
+  "sweeps": {
+    "raw": [
+      {
+        "k": 2,
+        "wcss": 13770.82512667865,
+        "silhouette": 0.8796642391766009,
+        "min_cluster": 30,
+        "max_cluster": 195
+      },
+      {
+        "k": 3,
+        "wcss": 10842.554371800592,
+        "silhouette": 0.8527535167021683,
+        "min_cluster": 10,
+        "max_cluster": 191
+      },
+      {
+        "k": 4,
+        "wcss": 8074.157374415584,
+        "silhouette": 0.8610781359064426,
+        "min_cluster": 5,
+        "max_cluster": 186
+      },
+      {
+        "k": 5,
+        "wcss": 7973.000997620497,
+        "silhouette": 0.8413964344801841,
+        "min_cluster": 1,
+        "max_cluster": 186
+      },
+      {
+        "k": 6,
+        "wcss": 5574.535211190103,
+        "silhouette": 0.8627792223962973,
+        "min_cluster": 1,
+        "max_cluster": 186
+      },
+      {
+        "k": 7,
+        "wcss": 4501.807586288637,
+        "silhouette": 0.8327833419660948,
+        "min_cluster": 1,
+        "max_cluster": 180
+      },
+      {
+        "k": 8,
+        "wcss": 4773.498824428398,
+        "silhouette": 0.8407433568986944,
+        "min_cluster": 1,
+        "max_cluster": 186
+      },
+      {
+        "k": 9,
+        "wcss": 4026.1241842389186,
+        "silhouette": 0.8383304324072289,
+        "min_cluster": 1,
+        "max_cluster": 184
+      },
+      {
+        "k": 10,
+        "wcss": 3330.64387634536,
+        "silhouette": 0.8209643971125723,
+        "min_cluster": 1,
+        "max_cluster": 178
+      },
+      {
+        "k": 11,
+        "wcss": 3136.5160971313762,
+        "silhouette": 0.8132689605791474,
+        "min_cluster": 1,
+        "max_cluster": 178
+      },
+      {
+        "k": 12,
+        "wcss": 2725.544266291841,
+        "silhouette": 0.8024357534424758,
+        "min_cluster": 1,
+        "max_cluster": 175
+      }
+    ],
+    "normalized": [
+      {
+        "k": 2,
+        "wcss": 29685.76416425046,
+        "silhouette": 0.3335344899921884,
+        "min_cluster": 108,
+        "max_cluster": 117
+      },
+      {
+        "k": 3,
+        "wcss": 26199.096771006833,
+        "silhouette": 0.3194730220941533,
+        "min_cluster": 60,
+        "max_cluster": 95
+      },
+      {
+        "k": 4,
+        "wcss": 25065.758239857314,
+        "silhouette": 0.24682563529012128,
+        "min_cluster": 36,
+        "max_cluster": 69
+      },
+      {
+        "k": 5,
+        "wcss": 22985.28193029583,
+        "silhouette": 0.2506043190819586,
+        "min_cluster": 15,
+        "max_cluster": 66
+      },
+      {
+        "k": 6,
+        "wcss": 23787.142994567017,
+        "silhouette": 0.15645214902833984,
+        "min_cluster": 1,
+        "max_cluster": 83
+      },
+      {
+        "k": 7,
+        "wcss": 21879.192561829343,
+        "silhouette": 0.2404335171691496,
+        "min_cluster": 1,
+        "max_cluster": 85
+      },
+      {
+        "k": 8,
+        "wcss": 22241.79243990747,
+        "silhouette": 0.16559107265859918,
+        "min_cluster": 1,
+        "max_cluster": 68
+      },
+      {
+        "k": 9,
+        "wcss": 21112.21488222605,
+        "silhouette": 0.19205373751899946,
+        "min_cluster": 1,
+        "max_cluster": 82
+      },
+      {
+        "k": 10,
+        "wcss": 20344.053817904245,
+        "silhouette": 0.21046530897433258,
+        "min_cluster": 1,
+        "max_cluster": 64
+      },
+      {
+        "k": 11,
+        "wcss": 20172.9118396827,
+        "silhouette": 0.16606152228033408,
+        "min_cluster": 1,
+        "max_cluster": 44
+      },
+      {
+        "k": 12,
+        "wcss": 18824.58288762969,
+        "silhouette": 0.17070943003451147,
+        "min_cluster": 1,
+        "max_cluster": 43
+      }
+    ]
+  }
+}

@@ -8,11 +8,21 @@ Forecast NYC yellow-taxi **demand per `zone × hour`** by fusing TLC trip record
 stream; **Spark Structured Streaming** consumes it. **K-Means (Spark MLlib)** discovers
 demand-pattern clusters; a query's demand is predicted from its cluster's weekly **shape**
 scaled by the zone's own level, scored against a ladder of baselines with **MAE / RMSE /
-WAPE** (WAPE rather than MAPE — the grid is ~49% zero bins, where MAPE is undefined).
+WAPE** (WAPE rather than MAPE — the grid is ~46% zero bins, where MAPE is undefined).
 
-The model is trained **once in batch, saved, and reloaded unchanged by the streaming job** — the
-live path never retrains, so batch and live predictions agree by construction. Re-running
-`train_kmeans.py` is the way to refresh clusters.
+On top of the ladder, **`src/batch/ablation.py`** answers proposal open question #2 with a
+supervised ablation (linear + gradient-boosted trees over four nested feature sets): **weather
+and events do beat trips-only** — see *Do weather & events beat trips-only?* below. The fitted
+linear weather/events model is exported to `models/conditions_model.json` and served live by
+`predict_live.py`, so `--temp / --precip / --is-event` are real inputs, not decoration.
+
+The models are trained **once in batch, saved, and reloaded unchanged by the streaming job and
+the live forecaster** — the live path never retrains, so batch and live predictions agree by
+construction. Re-running `train_kmeans.py` / `ablation.py` is the way to refresh them.
+
+**Deliverables:** the write-up is [REPORT.md](REPORT.md); the executed results walkthrough is
+[notebooks/results_walkthrough.ipynb](notebooks/results_walkthrough.ipynb); result figures and
+metrics live in [reports/](reports/).
 
 ---
 
@@ -87,6 +97,7 @@ python -m src.batch.geo_join               # first run downloads the Sedona jars
 python -m src.batch.features
 python -m src.batch.train_kmeans --k 4     # omit --k to be shown the elbow/silhouette
 python -m src.batch.evaluate
+python -m src.batch.ablation               # open question #2 + the conditions model
 python -m src.viz.make_maps
 ```
 
@@ -99,11 +110,12 @@ python -m src.viz.make_maps
 | `clean_aggregate` | `--force` | Write output even if a cleaning filter drops >10% of rows. Without it the job stops and shows the funnel. |
 | `train_kmeans` | `--inspect` | Sweep K, describe the clusters at the top candidate K values, save nothing. How you choose K on new data. `--candidates N` sets how many to describe (default 3). |
 | `train_kmeans` | `--k N` | Pin K and save the model. Omit both `--k` and `--inspect` to be shown the disagreement and take the default. `--skip-raw` skips the volume-vs-shape comparison sweep. |
+| `ablation` | `--skip-gbt` | Linear learner only — seconds instead of minutes. The exported conditions model is linear either way; GBT is the capacity-ceiling comparison. |
 | `producer` | `--reset-topic` | Delete and recreate the topic — a clean demo. Required if the topic is non-empty, else the run is refused. |
 | `producer` | `--reset-only` | Reset and exit, without producing. Use this **before** starting a consumer. |
 | `producer` | `--speedup N` | Simulated seconds per real second (default 600 = 1 real sec ⇒ 10 simulated min). Also `--hours`, `--start`, `--append`, `--dry-run`. |
 | `spark_stream` | `--run-seconds N` | Stop after N seconds. Also `--fresh` (clear sink + checkpoint), `--validate`, `--ready-file`. |
-| `predict_live` | `--zone / --at` | The query. `--temp/--precip/--is-event` are accepted but ignored by this model. |
+| `predict_live` | `--zone / --at` | The query. `--temp/--precip/--is-event` are **served by the conditions model** (defaults: monthly-normal temperature, no rain, flags from `events.csv`). If `ablation.py` has not been run they are reported as ignored. |
 
 ### Full-year run
 
@@ -137,14 +149,15 @@ no model.
 ```powershell
 python -m src.batch.train_kmeans --k <N>
 python -m src.batch.evaluate
+python -m src.batch.ablation
 python -m src.viz.make_maps
 ```
 
 Or use the launcher, which does the same in two invocations:
 
 ```powershell
-.un_pipeline_full_year.bat        # phase 1, stops for review
-.un_pipeline_full_year.bat k 4    # phase 2, once you have chosen
+.\run_pipeline_full_year.bat        # phase 1, stops for review
+.\run_pipeline_full_year.bat k 4    # phase 2, once you have chosen
 ```
 
 `kmeans_metadata.json` records the chosen K, both criterion suggestions, both sweep
@@ -218,31 +231,34 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-
 | 7 | `python -m src.batch.features` | `data/processed/features.parquet` |
 | 8 | `python -m src.batch.train_kmeans --k 4` | `models/kmeans/`, `reports/k_sweep.csv` |
 | 9 | `python -m src.batch.evaluate` | `reports/baseline_metrics.csv` |
-| 10 | `python -m src.stream.producer` | replays trips into Kafka |
-| 11 | `spark-submit ... src\stream\spark_stream.py` | windowed predicted-vs-actual demand |
-| 12 | `python -m src.stream.predict_live` | single live query -> predicted demand |
-| 13 | `python -m src.viz.make_maps` | Folium map, GeoJSON, plots |
+| 10 | `python -m src.batch.ablation` | `reports/ablation_metrics.csv`, `models/conditions_model.json`, `models/hist_avg.parquet` |
+| 11 | `python -m src.stream.producer` | replays trips into Kafka |
+| 12 | `spark-submit ... src\stream\spark_stream.py` | windowed predicted-vs-actual demand |
+| 13 | `python -m src.stream.predict_live` | single live query -> predicted demand (shape + conditions models) |
+| 14 | `python -m src.viz.make_maps` | Folium map, GeoJSON, plots |
 
-> All 13 steps are implemented. Remaining work is the Phase 7-8 write-up
+> All 14 steps are implemented. Remaining work is the Phase 8 write-up
 > (see `PROJECT_PLAN.md`).
 
 ---
 
 ## Repository layout
 
-```
+```text
 config.py               all paths, dates, versions, thresholds, seeds
 docker-compose.yml      Kafka KRaft single broker + topic init
 data/raw/               TLC monthly parquet (git-ignored)
 data/external/          zone lookup, shapefile, weather, events
 data/processed/         demand.parquet, features.parquet, stream output
-models/                 saved KMeans PipelineModel + cluster profile
+models/                 saved KMeans PipelineModel, cluster profile, conditions model
 reports/                plots, GeoJSON, metrics tables
 src/ingest/             download_tlc, fetch_weather, build_events
-src/batch/              clean_aggregate, geo_join, features, train_kmeans, evaluate
+src/batch/              clean_aggregate, geo_join, features, train_kmeans, evaluate,
+                        ablation
 src/stream/             producer, spark_stream, predict_live
 src/viz/                make_maps
-notebooks/              exploration only — pipeline logic lives in src/
+notebooks/              results_walkthrough.ipynb — executed presentation layer
+                        over the artifacts; pipeline logic lives in src/
 ```
 
 ## Data notes worth putting in the report
@@ -276,8 +292,9 @@ The parade and the day itself are now separate entries.
 `features.py`, `train_kmeans.py`, `evaluate.py` and `make_maps.py` cannot drift apart.
 `demand.parquet` holds observed demand only; `features.py` builds the full
 `kept zones × every hour` grid and zero-fills the gaps. Zones averaging under
-`MIN_ZONE_TRIPS_PER_DAY = 1.0` are excluded first — **40 of 263 zones, carrying 634 trips
-= 0.0070% of demand**, leaving **223 zones and 99.9930% of demand**. The two rules are
+`MIN_ZONE_TRIPS_PER_DAY = 1.0` are excluded first — on the Q1 sample, **40 of 263 zones,
+carrying 634 trips = 0.0070% of demand**, leaving **223 zones and 99.9930% of demand**
+(the full year keeps **225 zones** by the same rule). The two rules are
 paired on purpose: zero-filling *without* the floor would manufacture ~87k all-zero rows
 for places with no taxi service at all (Governor's Island has no road access), which is
 precisely the degenerate cluster the floor exists to prevent. The exclusion list is
@@ -287,8 +304,8 @@ printed in full on every run rather than applied silently.
 
 | Artifact | Grain | Shape | Used by |
 | --- | --- | --- | --- |
-| `features.parquet` | one row per `(zone_id, date_local, hour_local)` | 223 × 2183 = 486,809 | baselines, `evaluate.py` |
-| profile matrix (derived in `train_kmeans.py`, not stored) | one row per zone | 223 × 168 `(hour, dow)` | K-Means clustering |
+| `features.parquet` | one row per `(zone_id, date_local, hour_local)` | 223 × 2183 = 486,809 (Q1) · 225 × 8784 = 1,976,400 (full year) | baselines, `evaluate.py`, `ablation.py` |
+| profile matrix (derived in `train_kmeans.py`, not stored) | one row per zone | kept zones × 168 `(hour, dow)` | K-Means clustering |
 
 K-Means clusters *zones* by their weekly demand profile; the per-observation table is
 what the baseline ladder is scored against. Building the profile matrix inside
@@ -296,10 +313,47 @@ what the baseline ladder is scored against. Building the profile matrix inside
 
 **`hist_avg_demand` is fitted on the training split only.** It is simultaneously a
 feature and the first rung of the baseline ladder, so computing it over the whole
-quarter would leak test-period demand into training and flatter every metric. The split
-is time-based (train `2024-01-01..2024-03-12`, test `2024-03-13..2024-03-31`) and
-deterministic — no seed involved — and is stored as `is_train` so `evaluate.py` reuses
-exactly the same split rather than re-deriving it.
+range would leak test-period demand into training and flatter every metric. The split
+is time-based (first 80% of days train, the rest test — on the full year that is
+train `2024-01-01..2024-10-18`, test `2024-10-19..2024-12-31`) and
+deterministic — no seed involved — and is stored as `is_train` so `evaluate.py` and
+`ablation.py` reuse exactly the same split rather than re-deriving it.
+
+## Do weather & events beat trips-only? (open question #2)
+
+`python -m src.batch.ablation` answers it with a supervised ablation: four nested
+feature sets (`time only` → `+ weather` → `+ events` → `+ both`) × two learners
+(linear OLS and gradient-boosted trees), all fitted on the train split and scored on
+the identical held-out rows with the same metrics code as `evaluate.py`. Weather and
+event effects enter as **interactions with `hist_avg_demand`** — their effect is
+proportional (a rainy Friday adds many trips in Midtown, a fraction of one in a quiet
+zone), so a global additive coefficient would be mis-specified.
+
+Full-year 2024 results (held-out test, N = 399,600):
+
+| Model (linear) | MAE | WAPE | WAPE special days | WAPE rain hours |
+| --- | --- | --- | --- | --- |
+| time only (= hist_avg) | 5.437 | 25.49% | 47.93% | 31.22% |
+| time + weather | 5.420 | 25.41% | 47.98% | 30.82% |
+| time + events | 5.319 | 24.93% | 42.71% | 29.06% |
+| **time + weather + events** | **5.303** | **24.86%** | **42.57%** | **28.57%** |
+
+**Verdict: yes, meaningfully** — by the convention stated in the script's output
+(≥2% relative WAPE overall or ≥5% on a target subset): **+2.5% relative overall,
++11.2% on special days, +8.5% on rain hours** (GBT agrees: +2.7% / +11.6% / +8.8%).
+The fitted coefficients read directly: each mm of rain **+0.55%** of a cell's usual
+demand, an event day **−8.8%**, a federal holiday **−24.2%** — events *reduce* street
+demand on average (closures, people at home), which is exactly why `hist_avg` alone
+overshoots Thanksgiving by ~50%. Two honest caveats, both printed by the script:
+weather's ~11 km grid means it acts as a citywide temporal signal (27 distinct series
+for 225 zones), and GBT under these settings *loses* to OLS riding `hist_avg` — the
+strong base feature does most of the work.
+
+The full linear model is exported to `models/conditions_model.json` (+
+`models/hist_avg.parquet`) after a parity check proving plain arithmetic on the JSON
+reproduces Spark's predictions (max diff ~1e-13). That is the **conditions model**
+`predict_live.py` serves — it is also the most accurate frozen model in the ladder,
+beating `hist_avg` itself.
 
 ## Streaming demo
 
@@ -340,7 +394,7 @@ python -m src.stream.spark_stream --run-seconds 120 --fresh --validate
 ```
 
 `spark_stream.py` imports `build_filters()` and `local_date_hour()` from
-`clean_aggregate.py` rather than re-implementing them, and applies the same 223-zone
+`clean_aggregate.py` rather than re-implementing them, and applies the same
 modelling set, so streamed windows are comparable to `demand.parquet` cell for cell.
 `--validate` checks exactly that and refuses to continue on any disagreement.
 
@@ -352,32 +406,37 @@ modelling set, so streamed windows are comparable to `demand.parquet` cell for c
 | Output mode | append | emits each window once, when final — `update` re-emits partial windows with no marker for which is final, making batch comparison impossible; append is also the only mode the parquet sink supports |
 | Model | loaded from `models/`, never retrained | the live forecaster is the same artifact `evaluate.py` scored |
 
-The live rule is **cluster shape × zone level**, the interpretable model — deliberately
-not `hist_avg`, which is more accurate but has no compact live representation
-(37,464 cells versus 895). With a 2-hour watermark the final ~2 simulated hours of any
-replay never close, so replay more hours than you intend to validate.
+The stream serves **cluster shape × zone level**, the interpretable model — deliberately
+not `hist_avg`, which has no compact windowed representation. With a 2-hour watermark
+the final ~2 simulated hours of any replay never close, so replay more hours than you
+intend to validate.
 
 ### Single-query forecaster
 
 ```bash
-python -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00"
+python -m src.stream.predict_live --zone 79  --at "2024-01-13 01:00" --precip 5
+python -m src.stream.predict_live --zone 161 --at "2024-11-28 15:00"
 python -m src.stream.predict_live --validate
 ```
 
-Loads the same artifacts the stream serves and applies identical arithmetic, so a
-single query returns exactly the number the stream and batch produce for the same
-`(zone, hour-of-week)` — verified to the cent. Pandas rather than Spark, so a demo
-query answers instantly. The response shows its reasoning: which cluster, that
-cluster's character (derived from its shape at load time, never hard-coded), the zone's
-level, and the multiplier.
+Serves **two models side by side**, labelled:
 
-**The model is a function of `(zone, hour-of-week)` only.** `--temp`, `--precip` and
-`--is-event` are accepted so the interface is stable for a future feature-based model,
-but they are ignored and every response that supplies one says so explicitly. That
-honesty is load-bearing: on New Year's morning zone 79 saw **440** trips at 02:00
-against a prediction of **88.65**, because the model can only offer an average Monday
-2 a.m. An interface that quietly accepted `--is-event` would imply an event-awareness
-this model does not have. Zones outside the 223-zone modelling set are rejected with the
+* **Shape model** — the same artifacts the stream serves, identical arithmetic, so a
+  single query returns exactly the number the stream and batch produce for the same
+  `(zone, hour-of-week)` — verified to the cent by `--validate`. The response shows
+  its reasoning: which cluster, that cluster's character (derived from its shape at
+  load time, never hard-coded), the zone's level, and the multiplier.
+* **Conditions model** (the headline) — the linear weather/events model from
+  `ablation.py`, applied in pandas from `conditions_model.json`. `--temp`, `--precip`
+  and `--is-event` genuinely move the forecast, by fitted, test-set-verified
+  coefficients. Defaults are stated in every response: monthly-normal temperature, no
+  rain, and holiday/event flags **looked up automatically from `events.csv`** for the
+  query date — ask for Thanksgiving 15:00 and the response shows
+  `events −134.7` against a 414-trip historical base, no flag needed.
+
+Pandas rather than Spark, so a demo query answers instantly. If `ablation.py` has not
+been run, the tool degrades to the shape model and reports the condition inputs as
+ignored — never silently. Zones outside the modelling set are rejected with the
 reason, never answered with a silently wrong number.
 
 ## Report artifacts (`reports/`)
@@ -386,12 +445,13 @@ reason, never answered with a silently wrong number.
 
 | File | What it shows |
 | --- | --- |
-| `k_selection.png` | Elbow and silhouette as two stacked panels (never a dual axis), with the K=7 / K=2 disagreement annotated and K=4 marked. Proposal question #1 as a figure. |
-| `zone_hour_heatmap.png` | 223 zones × 168 hours of the week, rows grouped by cluster, row-normalised so brightness is *when* a zone is busy rather than how busy. |
-| `cluster_map.html` | Folium map of the 223 zones, legend keyed by derived cluster character. |
+| `k_selection.png` | Elbow and silhouette as two stacked panels (never a dual axis), with both criterion suggestions annotated and the chosen K marked — all read from `kmeans_metadata.json`, never hard-coded (full year: elbow K=5, silhouette K=2, chosen K=5). Proposal question #1 as a figure. |
+| `ablation_wape.png` | Held-out WAPE per nested feature set, per subset — open question #2 as a figure, with the relative gains annotated. |
+| `zone_hour_heatmap.png` | Modelling zones × 168 hours of the week, rows grouped by cluster, row-normalised so brightness is *when* a zone is busy rather than how busy. |
+| `cluster_map.html` | Folium map of the modelling zones, legend keyed by derived cluster character, with held-out accuracy for the cluster model, `hist_avg`, and the weather/events model. |
 | `geojson/clusters.geojson` | Static zone → cluster assignment, EPSG:4326. |
 | `geojson/demand_<how>_<label>.geojson` | Predicted demand per zone at one hour-of-week (Tue 08:00, Wed 18:00, Sat 01:00, Sun 04:00). |
-| `k_sweep.csv`, `baseline_metrics.csv` | The underlying numbers. |
+| `k_sweep.csv`, `baseline_metrics.csv`, `ablation_metrics.csv` | The underlying numbers. |
 
 Cluster colours use the three categorical slots that clear the all-pairs
 colour-vision gates a choropleth needs; the singleton cluster is deliberately neutral
