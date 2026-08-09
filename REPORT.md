@@ -62,7 +62,7 @@ busy, not how busy. K is chosen by elbow + silhouette **re-swept on the full yea
 silhouette says K=2; **K=5** was chosen after inspecting cluster contents:
 
 | Cluster | Character (derived from shape, not hand-named) | Zones | Trips |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 2 | business core — weekday evenings (peaks Thu 18:00) | 66 | 33.9M |
 | 3 | nightlife — weekend small hours (peaks Sun 01:00) | 15 | 3.9M |
 | 0 | residential commute (peaks Wed 07:00) | 35 | 0.6M |
@@ -86,7 +86,7 @@ Held-out test split, N = 399,600 `(zone, hour)` cells, full-year 2024. Headline
 metric is **WAPE** (the grid is ~46% zero bins, where MAPE is undefined):
 
 | Method | MAE | RMSE | WAPE |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Global mean (naive floor) | 31.51 | 60.40 | 147.7% |
 | Per-zone mean | 13.46 | 38.80 | 63.1% |
 | Historical avg (zone, hour, dow) | 5.44 | 18.20 | 25.5% |
@@ -110,12 +110,70 @@ agrees (+2.7% / +11.6% / +8.8%). The fitted coefficients read directly:
   crowds off the streets), which is why history alone overshoots Thanksgiving by ~50%
 * a federal holiday: **−24.2%**
 
+**Statistical significance.** A point estimate alone cannot say whether the gap
+survives a different draw of test days, so `src/batch/significance.py` block-bootstraps
+**over test days** (errors correlate within a day — one storm, one parade — so per-row
+resampling would overstate certainty; 10,000 replicates, seed 42):
+
+| Subset | Δ WAPE (rel.) | 95% CI | p (one-sided) | test days |
+| --- | --- | --- | --- | --- |
+| Rain hours | +8.5% | **[+2.6, +18.7]** | **0.0003** | 19 |
+| Full grid | +2.5% | [−0.4, +5.6] | 0.045 | 74 |
+| Special days | +11.2% | [−20.3, +28.3] | 0.20 | 6 |
+
+Read honestly: the rain improvement is unambiguous; the overall improvement is
+significant at the 5% one-sided level with a CI that touches zero; the special-day
+estimate is large but only six special days fall in the held-out window — the wide CI
+is the cost of a leakage-free time-based split, reported rather than hidden.
+
+**Where the model fails** (`reports/error_map.html`): among the 58 zones with ≥10k
+held-out trips, the best-forecast zones are the dense Manhattan core (Clinton East
+17.6%, East Chelsea 18.1% WAPE) and the worst are residential/edge zones (Alphabet
+City 45.1%, Two Bridges 43.6%, Central Harlem North 42.9%) — thinner, spikier demand
+with the same citywide weather signal. This is the per-zone-signal limitation made
+visible, and the obvious next-work item.
+
+**Association rules — the course's second technique, applied to flows.**
+`src/batch/association_rules.py` runs Spark MLlib **FP-Growth** over all 39.2M cleaned
+trips (one transaction per trip: pickup item + dropoff item; minSupport 0.1%,
+minConfidence 5%) and keeps the directed `pickup → dropoff` rules. Sixty-five rules
+clear the thresholds, and their structure is a finding in itself: the highest-lift
+flows are **reciprocal adjacent-neighbourhood pairs** — Yorkville ⇄ Lenox Hill (lift
+3.9–4.1), Upper West Side North ⇄ South (3.9–4.0), Upper East Side North ⇄ South
+(3.3) — yellow-taxi demand is hyper-local. The strongest structural corridor from an
+airport is **LaGuardia → Times Sq/Theatre District (lift 2.0)**; no airport rule
+survives at 10% confidence because airport dropoffs disperse across many zones. For
+the demand problem this is repositioning structure: a dropoff is supply appearing
+where the next pickup happens, and high-lift rules say where that supply flows next.
+
 Honest caveats, printed by the pipeline itself: Open-Meteo's ~11 km grid collapses
 225 zones onto 27 distinct weather series, so weather acts as a citywide *temporal*
 signal, and GBT under our settings loses to OLS riding `hist_avg` — the strong base
 feature does most of the work.
 
-## 6. Streaming and live prediction
+## 6. Scalability — measured, not asserted
+
+The Big-Data claim is that the pipeline is distributed by design: the same code
+runs unchanged on one month or twelve. `src/batch/benchmark_scale.py` measures it —
+the core path (read → clean with the exact production predicates → aggregate to
+`(zone, date, hour)`) over growing month windows, cold-cache, after a discarded
+warm-up run (Apple M-series, 8 cores, `local[*]`):
+
+| Window | Rows in | Cells out | Wall-clock | Throughput |
+| --- | --- | --- | --- | --- |
+| 1 month | 2.96M | 72.7k | 1.14 s | 2.60M rows/s |
+| 3 months | 9.55M | 226.7k | 2.42 s | 3.94M rows/s |
+| 6 months | 20.3M | 484.3k | 4.95 s | 4.11M rows/s |
+| 12 months | 41.2M | 1.01M | 9.19 s | 4.48M rows/s |
+
+**14× the rows takes 8× the time** — sub-linear, because fixed per-job overhead
+amortises while per-partition scan cost stays constant. Nothing in the pipeline ever
+collects raw data to the driver, so the execution graph is identical on a cluster;
+this curve is the single-node floor of a horizontally scalable job, which is what
+lets one year here stand in for the multi-year, multi-hundred-million-row corpus
+the same code would process on real hardware.
+
+## 7. Streaming and live prediction
 
 The producer replays historical Parquet into Kafka as a simulated live feed;
 **event time is the pickup timestamp from the data**, never wall-clock, so any
@@ -135,7 +193,7 @@ automatically from the calendar. Querying Midtown Center for Thanksgiving 15:00
 returns a 414-trip historical base with a **−134.7 event adjustment** — no flag
 supplied. Both proposal novelties are therefore delivered and demonstrable live.
 
-## 7. Answers to the proposal's open questions
+## 8. Answers to the proposal's open questions
 
 1. **How many clusters best capture demand?** K=5 on the full year (elbow), after
    inspection; the silhouette's K=2 merely separates Manhattan from everything.
@@ -152,7 +210,7 @@ supplied. Both proposal novelties are therefore delivered and demonstrable live.
 4. **A trip crossing several zones?** Assigned to its **pickup** zone — demand is
    "where a vehicle is requested", which is the quantity a dispatcher must supply.
 
-## 8. Related work
+## 9. Related work
 
 * **Yu, Zhang & Sarwat (2019), GeoInformatica — Apache Sedona/GeoSpark.** Used
   directly: Sedona reads the zone shapefile, computes projected-CRS centroids and
@@ -170,7 +228,7 @@ supplied. Both proposal novelties are therefore delivered and demonstrable live.
   grouped by cluster and the per-window choropleth maps are this paper's
   query-pattern idea applied to our clusters.
 
-## 9. Reproducibility
+## 10. Reproducibility
 
 Pinned versions (Python 3.11 · Java 17 · Spark 3.5.3 · Scala 2.12 · Sedona 1.9.0 ·
 Kafka 3.9), fixed seed 42 for K-Means and GBT, deterministic time-based split,

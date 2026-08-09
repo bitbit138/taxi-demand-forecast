@@ -46,3 +46,7 @@ desktop.ini
 
 # --- Launcher scratch -------------------------------------------------------
 *.log
+
+# --- Local working notes, not part of the submission ------------------------
+CLAUDE_CODE_PROMPT.md
+QA_PREP.md

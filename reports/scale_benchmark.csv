@@ -1,0 +1,5 @@
+months,rows_in,rows_out,seconds,rows_per_second,machine
+1,2964624,72677,1.14,2604004,"arm64, 8 cores, local[*]"
+3,9554778,226703,2.42,3942439,"arm64, 8 cores, local[*]"
+6,20332093,484308,4.95,4106506,"arm64, 8 cores, local[*]"
+12,41169720,1009226,9.19,4478354,"arm64, 8 cores, local[*]"

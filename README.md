@@ -232,13 +232,15 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-
 | 8 | `python -m src.batch.train_kmeans --k 4` | `models/kmeans/`, `reports/k_sweep.csv` |
 | 9 | `python -m src.batch.evaluate` | `reports/baseline_metrics.csv` |
 | 10 | `python -m src.batch.ablation` | `reports/ablation_metrics.csv`, `models/conditions_model.json`, `models/hist_avg.parquet` |
-| 11 | `python -m src.stream.producer` | replays trips into Kafka |
-| 12 | `spark-submit ... src\stream\spark_stream.py` | windowed predicted-vs-actual demand |
-| 13 | `python -m src.stream.predict_live` | single live query -> predicted demand (shape + conditions models) |
-| 14 | `python -m src.viz.make_maps` | Folium map, GeoJSON, plots |
+| 11 | `python -m src.batch.significance` | `reports/significance.csv` — bootstrap CIs for the ablation delta |
+| 12 | `python -m src.batch.association_rules` | `reports/association_rules.csv` — FP-Growth PU→DO rules (needs `TAXI_MONTHS=full`) |
+| 13 | `python -m src.batch.benchmark_scale` | `reports/scale_benchmark.csv` — wall-clock vs input size (needs `TAXI_MONTHS=full`) |
+| 14 | `python -m src.stream.producer` | replays trips into Kafka |
+| 15 | `spark-submit ... src\stream\spark_stream.py` | windowed predicted-vs-actual demand |
+| 16 | `python -m src.stream.predict_live` | single live query -> predicted demand (shape + conditions models) |
+| 17 | `python -m src.viz.make_maps` | Folium maps (clusters + error analysis), GeoJSON, plots |
 
-> All 14 steps are implemented. Remaining work is the Phase 8 write-up
-> (see `PROJECT_PLAN.md`).
+> All 17 steps are implemented; the write-up is [REPORT.md](REPORT.md).
 
 ---
 
@@ -449,9 +451,13 @@ reason, never answered with a silently wrong number.
 | `ablation_wape.png` | Held-out WAPE per nested feature set, per subset — open question #2 as a figure, with the relative gains annotated. |
 | `zone_hour_heatmap.png` | Modelling zones × 168 hours of the week, rows grouped by cluster, row-normalised so brightness is *when* a zone is busy rather than how busy. |
 | `cluster_map.html` | Folium map of the modelling zones, legend keyed by derived cluster character, with held-out accuracy for the cluster model, `hist_avg`, and the weather/events model. |
+| `error_map.html` | Held-out WAPE per zone (conditions model) — where the forecast misses, scale clipped at p95 with exact values in tooltips. |
 | `geojson/clusters.geojson` | Static zone → cluster assignment, EPSG:4326. |
 | `geojson/demand_<how>_<label>.geojson` | Predicted demand per zone at one hour-of-week (Tue 08:00, Wed 18:00, Sat 01:00, Sun 04:00). |
 | `k_sweep.csv`, `baseline_metrics.csv`, `ablation_metrics.csv` | The underlying numbers. |
+| `significance.csv` | Block-bootstrap CIs and p-values for the ablation improvement (`src/batch/significance.py`). |
+| `scale_benchmark.csv` | Wall-clock vs input size for the core batch path (`src/batch/benchmark_scale.py`). |
+| `association_rules.csv` | FP-Growth pickup→dropoff rules with support/confidence/lift (`src/batch/association_rules.py`). |
 
 Cluster colours use the three categorical slots that clear the all-pairs
 colour-vision gates a choropleth needs; the singleton cluster is deliberately neutral

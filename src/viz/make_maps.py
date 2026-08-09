@@ -486,6 +486,119 @@ def plot_heatmap(forecaster: Forecaster, styles: dict[int, dict]) -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# Error analysis — where does the model fail?
+# --------------------------------------------------------------------------- #
+def build_error_map(forecaster: Forecaster) -> Path | None:
+    """Choropleth of per-zone held-out WAPE for the conditions model.
+
+    An accuracy number is an average; this map shows its geography. Colour is a
+    single-hue sequential ramp (magnitude), clipped at the 95th percentile so a
+    handful of tiny-volume zones cannot compress the scale for everyone else —
+    the tooltip always carries the exact value and the zone's test volume, so
+    nothing is hidden by the clip.
+    """
+    if not (config.CONDITIONS_MODEL_JSON.exists() and config.FEATURES_PARQUET.exists()):
+        return None
+    from src.batch.significance import apply_conditions_model  # noqa: PLC0415
+
+    model = json.loads(config.CONDITIONS_MODEL_JSON.read_text())
+    frame = pd.read_parquet(config.FEATURES_PARQUET)
+    test = frame[~frame["is_train"]].copy()
+    test["pred"] = apply_conditions_model(test, model)
+    test["abs_err"] = (test["pred"] - test["trip_count"]).abs()
+
+    per_zone = test.groupby("zone_id").agg(
+        abs_err=("abs_err", "sum"), actual=("trip_count", "sum"),
+    )
+    per_zone["wape"] = per_zone["abs_err"] / per_zone["actual"].clip(lower=1)
+
+    geo = zone_geometry()
+    zones = forecaster.zones.merge(
+        per_zone.reset_index(), on="zone_id", how="left"
+    ).merge(geo[["zone_id", "geometry"]], on="zone_id", how="inner")
+
+    print("\n  Error analysis — held-out WAPE per zone (conditions model)")
+    busy = zones[zones["actual"] >= 10_000].sort_values("wape")
+    print(f"    zones with >= 10k test trips : {len(busy)}")
+    print(f"    {'worst 5':<34}{'WAPE':>8}    {'best 5':<34}{'WAPE':>8}")
+    worst5 = busy.tail(5).iloc[::-1].reset_index()
+    best5 = busy.head(5).reset_index()
+    for i in range(5):
+        w, b = worst5.iloc[i], best5.iloc[i]
+        print(f"    {w['zone_name']:<34.33}{100 * w['wape']:>7.1f}%    "
+              f"{b['zone_name']:<34.33}{100 * b['wape']:>7.1f}%")
+
+    vmax = float(per_zone["wape"].quantile(0.95))
+    ramp = BLUE_RAMP
+
+    def colour_for(wape: float) -> str:
+        clipped = min(max(wape, 0.0), vmax) / vmax
+        return ramp[int(round(clipped * (len(ramp) - 1)))]
+
+    fmap = folium.Map(
+        location=[40.7300, -73.9350], zoom_start=11, tiles="cartodbpositron",
+        control_scale=True,
+    )
+    for _, row in zones.iterrows():
+        wape = float(row["wape"]) if pd.notna(row["wape"]) else 0.0
+        feature = {
+            "type": "Feature",
+            "geometry": row["geometry"],
+            "properties": {
+                "zone_id": int(row["zone_id"]),
+                "zone_name": row["zone_name"],
+                "borough": row["borough"],
+                "wape_pct": round(100 * wape, 1),
+                "test_trips": int(row["actual"]) if pd.notna(row["actual"]) else 0,
+                "cluster_character": forecaster.characters[int(row["cluster"])]["label"],
+            },
+        }
+        fill = colour_for(wape)
+        folium.GeoJson(
+            feature,
+            style_function=lambda _f, c=fill: {
+                "fillColor": c, "color": c, "weight": 0.6, "fillOpacity": 0.78,
+            },
+            highlight_function=lambda _f: {"weight": 3, "color": INK,
+                                           "fillOpacity": 0.9},
+            tooltip=folium.GeoJsonTooltip(
+                fields=["zone_id", "zone_name", "borough", "wape_pct",
+                        "test_trips", "cluster_character"],
+                aliases=["Zone", "Name", "Borough", "WAPE %", "Test trips",
+                         "Cluster"],
+                sticky=True,
+            ),
+        ).add_to(fmap)
+
+    overall = 100 * per_zone["abs_err"].sum() / per_zone["actual"].sum()
+    legend = f"""
+    <div style="position:fixed;bottom:22px;left:22px;z-index:9999;max-width:330px;
+                background:{SURFACE};padding:12px 14px;border-radius:8px;
+                border:1px solid #dcdbd6;box-shadow:0 2px 10px rgba(0,0,0,.12);
+                font:12.5px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;color:#0b0b0b">
+      <div style="font-size:14px;font-weight:700;margin-bottom:2px">
+        Where the forecast misses</div>
+      <div style="color:#52514e;margin-bottom:7px">
+        Held-out WAPE per zone, conditions model ({test_window()}).
+        Darker = larger relative error. Scale clipped at the 95th percentile
+        ({100 * vmax:.0f}%); tooltips carry exact values.</div>
+      <div style="height:12px;border-radius:3px;margin-bottom:4px;
+                  background:linear-gradient(90deg,{ramp[0]},{ramp[6]},{ramp[-1]})"></div>
+      <div style="display:flex;justify-content:space-between;color:#52514e">
+        <span>0%</span><span>&ge;{100 * vmax:.0f}%</span></div>
+      <div style="margin-top:8px;padding-top:7px;border-top:1px solid #dcdbd6;
+                  color:#52514e">
+        Overall WAPE {overall:.1f}%. Busy zones sit far below it; the tail is
+        low-volume zones where a few trips move the ratio.</div>
+    </div>"""
+    fmap.get_root().html.add_child(folium.Element(legend))
+
+    out = config.REPORTS_DIR / "error_map.html"
+    fmap.save(str(out))
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Folium map + GeoJSON
 # --------------------------------------------------------------------------- #
 def zone_geometry() -> pd.DataFrame:
@@ -874,6 +987,9 @@ def main() -> int:
     heatmap_path, shares, order = plot_heatmap(forecaster, styles)
     outputs.append(heatmap_path)
     outputs.append(build_map(forecaster, styles, metrics))
+    error_map = build_error_map(forecaster)
+    if error_map is not None:
+        outputs.append(error_map)
     outputs.extend(export_geojson(forecaster, styles, DEFAULT_WINDOWS))
 
     ok = validate(forecaster, styles, outputs, shares, order, metadata)
