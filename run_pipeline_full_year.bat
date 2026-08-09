@@ -141,9 +141,15 @@ echo [B] Score the baseline ladder on the held-out split
 if errorlevel 1 (set "STEP=B evaluate" & goto :fail)
 
 echo.
-echo [C] Render report figures, map and GeoJSON
+echo [C] Weather/events ablation - answers open question #2, exports the
+echo     conditions model that predict_live.py serves
+"%VENV_PY%" -m src.batch.ablation
+if errorlevel 1 (set "STEP=C ablation" & goto :fail)
+
+echo.
+echo [D] Render report figures, map and GeoJSON
 "%VENV_PY%" -m src.viz.make_maps
-if errorlevel 1 (set "STEP=C make_maps" & goto :fail)
+if errorlevel 1 (set "STEP=D make_maps" & goto :fail)
 
 echo.
 echo ============================================================================
@@ -151,9 +157,11 @@ echo  PIPELINE COMPLETE - %RUN_LABEL%  (K=%CHOSEN_K%)
 echo ============================================================================
 echo   data\processed\  demand.parquet, features.parquet, modeling_zones.parquet
 echo   models\          kmeans\, zone_clusters.parquet, cluster_demand.parquet,
-echo                    kmeans_metadata.json (records chosen K + both sweeps)
+echo                    kmeans_metadata.json (records chosen K + both sweeps),
+echo                    conditions_model.json, hist_avg.parquet
 echo   reports\         k_selection.png, zone_hour_heatmap.png, cluster_map.html,
-echo                    geojson\, k_sweep.csv, baseline_metrics.csv
+echo                    geojson\, k_sweep.csv, baseline_metrics.csv,
+echo                    ablation_metrics.csv
 echo.
 echo   Streaming demo:  run_demo.bat
 endlocal

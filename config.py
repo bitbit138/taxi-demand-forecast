@@ -45,6 +45,11 @@ KMEANS_METADATA_JSON = MODELS_DIR / "kmeans_metadata.json"       # K, seed, swee
 KSWEEP_CSV = REPORTS_DIR / "k_sweep.csv"                         # elbow/silhouette curves
 METRICS_CSV = REPORTS_DIR / "baseline_metrics.csv"               # evaluate.py results
 
+# Weather/events ablation (src/batch/ablation.py) — proposal open question #2.
+ABLATION_METRICS_CSV = REPORTS_DIR / "ablation_metrics.csv"      # learner x feature set
+CONDITIONS_MODEL_JSON = MODELS_DIR / "conditions_model.json"     # portable linear model
+HIST_AVG_PARQUET = MODELS_DIR / "hist_avg.parquet"               # (zone,hour,dow) table
+
 STREAM_OUTPUT_DIR = PROCESSED_DIR / "stream_predictions"
 STREAM_CHECKPOINT_DIR = PROCESSED_DIR / "_checkpoints"
 

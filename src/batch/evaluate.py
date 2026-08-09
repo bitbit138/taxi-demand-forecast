@@ -1,11 +1,12 @@
 """Score the baseline ladder and the cluster-mean predictor on the held-out split.
 
-Every method is scored on the **identical** test rows (``is_train = false``,
-2024-03-13 onward). Predictions are columns on one DataFrame, so the row set cannot
+Every method is scored on the **identical** test rows (``is_train = false`` — the
+final ~20% of the configured date range, printed by the validation below).
+Predictions are columns on one DataFrame, so the row set cannot
 differ between methods by construction; ``validate_common_rows()`` additionally proves
 no method has a null prediction that would silently drop rows from its own average.
 
-**Why not MAPE as the headline.** The grid is 46% zero bins after zero-fill, and MAPE
+**Why not MAPE as the headline.** The grid is ~46% zero bins after zero-fill, and MAPE
 divides by the actual — undefined at zero and explosive near it, so a single quiet hour
 predicted 0.5 against an actual of 1 contributes 50% error and swamps the average. Two
 percentage metrics are reported instead:
@@ -284,12 +285,13 @@ def head_to_head(results: dict[str, dict]) -> None:
         print()
         print("  What each one keeps:")
         print("    hist_avg      a free parameter for every (zone, hour, dow) cell —")
-        print("                  223 x 24 x 7 = 37,464 values, zone-specific level AND")
+        print("                  zones x 24 x 7 values, zone-specific level AND")
         print("                  zone-specific shape.")
         print("    shape x level one shape per cluster plus one level per zone —")
-        print("                  4 x 168 + 223 = 895 values. Level stays zone-specific;")
-        print("                  temporal SHAPE is borrowed from the cluster. That")
-        print("                  borrowing is exactly what costs the accuracy.")
+        print("                  K x 168 + zones values, ~40x fewer. Level stays")
+        print("                  zone-specific; temporal SHAPE is borrowed from the")
+        print("                  cluster. That borrowing is exactly what costs the")
+        print("                  accuracy.")
         print()
         print("  So the clustering does carry real signal — shape x level beats the")
         print("  per-zone mean substantially, meaning a cluster's weekly shape predicts")
