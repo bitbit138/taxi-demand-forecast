@@ -1,11 +1,13 @@
 """Build the modelling table -> ``data/processed/features.parquet``.
 
-**Row grain: one row per ``(zone_id, date_local, hour_local)``** over the 223-zone
-modelling set — 223 zones x 2183 hours = 486,809 rows. This is the *per-observation*
-table. It feeds the baseline ladder and the evaluation in ``evaluate.py``.
+**Row grain: one row per ``(zone_id, date_local, hour_local)``** over the modelling
+zones — kept zones x every local hour of the configured range (223 x 2183 = 486,809
+rows on the Q1 sample; 225 x 8784 = 1,976,400 on the full year). This is the
+*per-observation* table. It feeds the baseline ladder and the evaluation in
+``evaluate.py``.
 
 It is NOT the clustering input. K-Means (Decision A) clusters *zones* by their
-``(hour, dow)`` demand profile, which is a 223-row x 168-column aggregation derived
+``(hour, dow)`` demand profile, which is a zones-row x 168-column aggregation derived
 **downstream in ``train_kmeans.py``** from this table. Two different artifacts:
 
   * ``features.parquet``      -> per (zone, hour) observation, for baselines/evaluation
@@ -15,7 +17,7 @@ It is NOT the clustering input. K-Means (Decision A) clusters *zones* by their
 Conflating them would silently change what K-Means is clustering.
 
 **Ordering: exclude, then zero-fill.** The grid is built from ``weather.parquet``
-restricted to the modelling zones, so it inherits the DST-correct 2183-hour calendar by
+restricted to the modelling zones, so it inherits the DST-correct hourly calendar by
 construction (local 02:00 on 2024-03-10 does not exist) and weather can never be null.
 Demand is left-joined onto that grid and absent bins become ``trip_count = 0``.
 

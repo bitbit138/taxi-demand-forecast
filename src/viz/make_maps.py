@@ -4,11 +4,16 @@ Outputs to ``reports/``:
 
   ``k_selection.png``        elbow + silhouette, with the disagreement annotated.
                              This is proposal question #1 answered as a figure.
-  ``zone_hour_heatmap.png``  223 zones x 168 hours of the week, rows grouped by
-                             cluster, so the nightlife late-peak and the business
+  ``zone_hour_heatmap.png``  modelling zones x 168 hours of the week, rows grouped
+                             by cluster, so the nightlife late-peak and the business
                              evening-peak are visible as bands.
-  ``cluster_map.html``       Folium map of the 223 zones by cluster, legend labelled
-                             with the derived characters.
+  ``cluster_map.html``       Folium map of the modelling zones by cluster, legend
+                             labelled with the derived characters.
+
+Everything data-dependent — K, the zone count, the criterion suggestions, the data
+range, the test window — is read from ``kmeans_metadata.json`` / the artifacts, never
+hard-coded: an earlier version wrote "K=4" into titles and the full-year K=5 rerun
+shipped a legend that contradicted its own model.
   ``geojson/clusters.geojson``          static zone -> cluster assignment
   ``geojson/demand_<how>.geojson``      per-time-window predicted demand
 
@@ -170,7 +175,7 @@ def plot_k_selection(chosen_k: int, metadata: dict) -> Path:
                  markeredgecolor=SURFACE, markeredgewidth=1.5)
     ax_wcss.set_ylabel("WCSS (within-cluster sum of squares)", color=INK_MUTED,
                        fontsize=10)
-    ax_wcss.set_title("Elbow — variance explained keeps improving past K=4",
+    ax_wcss.set_title(f"Elbow — WCSS knee at K={k_elbow}",
                       color=INK, fontsize=11, loc="left", pad=8)
 
     # --- silhouette --------------------------------------------------------
@@ -181,7 +186,7 @@ def plot_k_selection(chosen_k: int, metadata: dict) -> Path:
     ax_sil.set_ylabel("Silhouette (higher = better separated)", color=INK_MUTED,
                       fontsize=10)
     ax_sil.set_xlabel("K (number of clusters)", color=INK_MUTED, fontsize=10)
-    ax_sil.set_title("Silhouette — separation is best at the coarsest split",
+    ax_sil.set_title(f"Silhouette — separation peaks at K={k_sil}",
                      color=INK, fontsize=11, loc="left", pad=8)
 
     # --- annotation layer, deliberately not in a series colour -------------
@@ -225,16 +230,26 @@ def plot_k_selection(chosen_k: int, metadata: dict) -> Path:
         loc="upper right", frameon=False, fontsize=9, labelcolor=INK_MUTED,
     )
 
+    n_zones = int(metadata.get("profile_shape", [0])[0]) or "all modelling"
+    agree = k_elbow == k_sil
     fig.suptitle(
-        "Choosing K: the two criteria disagree",
+        "Choosing K: the two criteria agree" if agree
+        else "Choosing K: the two criteria disagree",
         color=INK, fontsize=14, fontweight="bold", x=0.055, ha="left", y=0.98,
     )
+    if chosen_k == k_elbow and not agree:
+        chosen_note = (f"K={chosen_k} follows the elbow after inspecting cluster "
+                       "contents at the candidate Ks (train_kmeans --inspect).")
+    elif chosen_k == k_sil and not agree:
+        chosen_note = (f"K={chosen_k} follows the silhouette after inspecting cluster "
+                       "contents at the candidate Ks (train_kmeans --inspect).")
+    else:
+        chosen_note = (f"K={chosen_k} was chosen after inspecting cluster contents "
+                       "at the candidate Ks — neither criterion alone decides.")
     fig.text(
         0.055, 0.935,
-        f"Elbow says K={k_elbow}, silhouette says K={k_sil}. K={chosen_k} was chosen after "
-        f"inspecting cluster contents: it is the coarsest K that separates a\nnightlife "
-        "group from the business core, which neither criterion can see. "
-        "Normalised (shape) profiles, 223 zones, train split only.",
+        f"Elbow says K={k_elbow}, silhouette says K={k_sil}. {chosen_note}\n"
+        f"Normalised (shape) profiles, {n_zones} zones, train split only.",
         color=INK_MUTED, fontsize=9.5, ha="left", va="top",
     )
     # Leave real space under the subtitle: at top=0.855 the first panel title
@@ -248,10 +263,110 @@ def plot_k_selection(chosen_k: int, metadata: dict) -> Path:
 
 
 # --------------------------------------------------------------------------- #
-# Figure 2 — zone x hour-of-week heatmap
+# Figure 2 — weather/events ablation (open question #2 as a figure)
+# --------------------------------------------------------------------------- #
+def plot_ablation() -> Path | None:
+    """Held-out WAPE per feature set, per subset — the ablation's verdict drawn.
+
+    The feature sets are *nested* (time -> +weather -> +events -> +both), an
+    ordered dimension, so they take ordinal steps of the single blue ramp rather
+    than categorical hues — magnitude of feature richness, not identity. Identity
+    is never colour-alone: a legend names the steps and every bar carries its
+    value. One axis; grouped horizontal bars with the repo's standard surface.
+    """
+    if not config.ABLATION_METRICS_CSV.exists():
+        return None
+    table = pd.read_csv(config.ABLATION_METRICS_CSV)
+    table = table[table["learner"] == "linear"]
+
+    subsets = [
+        ("all", "Full test grid"),
+        ("rain", "Rain hours (>1 mm)"),
+        ("special", "Special days\n(holiday or event)"),
+    ]
+    sets = ["time only", "time + weather", "time + events", "time + weather + events"]
+    # Well-separated ordinal steps of BLUE_RAMP, light -> dark with feature richness.
+    step_colours = [BLUE_RAMP[0], BLUE_RAMP[3], BLUE_RAMP[6], BLUE_RAMP[10]]
+
+    wape = {
+        (row["feature_set"], row["subset"]): 100 * float(row["wape"])
+        for _, row in table.iterrows()
+    }
+
+    fig, ax = plt.subplots(figsize=(9.5, 6))
+    fig.patch.set_facecolor(SURFACE)
+    ax.set_facecolor(SURFACE)
+
+    xmax = 1.32 * max(wape.values())   # room for value labels + annotations
+    bar_h, gap, group_pad = 0.19, 0.02, 0.35
+    yticks, ylabels = [], []
+    for g, (subset, label) in enumerate(subsets):
+        base = g * (len(sets) * (bar_h + gap) + group_pad)
+        group_max = max(wape[(s, subset)] for s in sets)
+        for i, feature_set in enumerate(sets):
+            y = base + i * (bar_h + gap)
+            value = wape[(feature_set, subset)]
+            ax.barh(y, value, height=bar_h, color=step_colours[i],
+                    edgecolor=SURFACE, linewidth=1)
+            ax.text(value + 0.01 * xmax, y, f"{value:.1f}%", va="center",
+                    fontsize=8.5, color=INK_MUTED)
+        # The finding, stated where it happens: relative gain of full vs time-only.
+        first = wape[(sets[0], subset)]
+        last = wape[(sets[-1], subset)]
+        rel = 100 * (first - last) / first
+        ax.text(group_max + 0.10 * xmax,
+                base + (len(sets) - 1) * (bar_h + gap) / 2,
+                f"{rel:+.1f}% relative", va="center", fontsize=9.5, color=ACCENT,
+                fontweight="bold")
+        yticks.append(base + (len(sets) - 1) * (bar_h + gap) / 2)
+        ylabels.append(label)
+
+    ax.set_xlim(0, xmax)
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels, fontsize=10, color=INK)
+    ax.invert_yaxis()
+    ax.set_xlabel("WAPE on the held-out test split (lower is better)",
+                  color=INK_MUTED, fontsize=10)
+    ax.grid(True, axis="x", color=GRID, linewidth=0.8, alpha=0.9)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(GRID)
+    ax.tick_params(colors=INK_MUTED, labelsize=9)
+
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=c, edgecolor="none")
+        for c in step_colours
+    ]
+    # Upper right is structurally empty: the first group's bars are the shortest
+    # and its annotation sits well left of the legend block.
+    ax.legend(handles, sets, loc="upper right", frameon=False, fontsize=9,
+              labelcolor=INK_MUTED, title="feature set (nested)",
+              title_fontsize=9, alignment="left")
+
+    ax.set_title(
+        "Weather & events beat trips-only — most where it matters",
+        color=INK, fontsize=14, fontweight="bold", loc="left", pad=34,
+    )
+    ax.text(
+        0, 1.022,
+        "Linear model, four nested feature sets, identical held-out rows.\n"
+        "Events do most of the work; weather earns its keep on rain hours.",
+        transform=ax.transAxes, color=INK_MUTED, fontsize=9.5, va="bottom",
+    )
+    fig.subplots_adjust(left=0.17, right=0.97, top=0.855, bottom=0.10)
+
+    out = config.REPORTS_DIR / "ablation_wape.png"
+    fig.savefig(out, dpi=160, facecolor=SURFACE)
+    plt.close(fig)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Figure 3 — zone x hour-of-week heatmap
 # --------------------------------------------------------------------------- #
 def plot_heatmap(forecaster: Forecaster, styles: dict[int, dict]) -> Path:
-    """223 zones x 168 hours, rows grouped by cluster, shares not raw counts.
+    """Modelling zones x 168 hours, rows grouped by cluster, shares not raw counts.
 
     Rows are row-normalised so every zone contributes its *shape*; on raw counts
     Midtown would saturate the scale and the clusters would be invisible.
@@ -384,7 +499,7 @@ def zone_geometry() -> pd.DataFrame:
 
 
 def build_map(forecaster: Forecaster, styles: dict[int, dict], metrics: dict) -> Path:
-    """Folium choropleth of the 223 modelling zones by cluster."""
+    """Folium choropleth of the modelling zones by cluster."""
     geo = zone_geometry()
     served = forecaster.zones.merge(
         geo[["zone_id", "geometry", "area_km2"]], on="zone_id", how="inner"
@@ -442,14 +557,25 @@ def build_map(forecaster: Forecaster, styles: dict[int, dict], metrics: dict) ->
         group.add_to(fmap)
 
     folium.LayerControl(collapsed=False).add_to(fmap)
-    fmap.get_root().html.add_child(folium.Element(legend_html(styles, metrics)))
+    fmap.get_root().html.add_child(
+        folium.Element(legend_html(styles, metrics, forecaster))
+    )
 
     out = config.REPORTS_DIR / "cluster_map.html"
     fmap.save(str(out))
     return out
 
 
-def legend_html(styles: dict[int, dict], metrics: dict) -> str:
+def test_window() -> str:
+    """The held-out date range, read from the split itself — never hard-coded."""
+    split = pd.read_parquet(
+        config.FEATURES_PARQUET, columns=["date_local", "is_train"]
+    )
+    test = split.loc[~split["is_train"], "date_local"]
+    return f"{test.min()}&ndash;{test.max()}"
+
+
+def legend_html(styles: dict[int, dict], metrics: dict, forecaster: Forecaster) -> str:
     """Legend keyed by derived character, plus correctly-captioned accuracy."""
     rows = []
     for cluster in sorted(styles):
@@ -472,19 +598,29 @@ def legend_html(styles: dict[int, dict], metrics: dict) -> str:
     hist = metrics.get("Historical avg (zone,hour,dow)")
     accuracy = ""
     if scaled and hist:
+        conditions_line = ""
+        if config.CONDITIONS_MODEL_JSON.exists():
+            payload = json.loads(config.CONDITIONS_MODEL_JSON.read_text())
+            m = payload["test_metrics"]["this_model"]
+            conditions_line = (
+                f'weather/events linear model &mdash; MAE {m["mae"]:.2f}, '
+                f'WAPE {100 * m["wape"]:.1f}%<br>'
+            )
         accuracy = (
             f'<div style="margin-top:9px;padding-top:8px;'
             f'border-top:1px solid #dcdbd6;color:#52514e">'
             f'<b style="color:#0b0b0b">Held-out test split</b> '
-            f'(2024-03-13&ndash;03-31)<br>'
+            f'({test_window()})<br>'
             f'cluster shape &times; zone level &mdash; MAE '
             f'{scaled["mae"]:.2f}, WAPE {100 * scaled["wape"]:.1f}%<br>'
             f'per-zone hist. average &mdash; MAE {hist["mae"]:.2f}, '
             f'WAPE {100 * hist["wape"]:.1f}%<br>'
+            f'{conditions_line}'
             f'<i>The clustering is the interpretable, live-serveable model, '
             f'not the most accurate one.</i></div>'
         )
 
+    chosen_k = int(forecaster.metadata.get("chosen_k", len(styles)))
     return f"""
     <div style="position:fixed;bottom:22px;left:22px;z-index:9999;max-width:340px;
                 background:{SURFACE};padding:12px 14px;border-radius:8px;
@@ -493,8 +629,8 @@ def legend_html(styles: dict[int, dict], metrics: dict) -> str:
       <div style="font-size:14px;font-weight:700;margin-bottom:2px">
         NYC taxi zones by weekly demand shape</div>
       <div style="color:#52514e;margin-bottom:7px">
-        K-Means, K=4, on L1-normalised profiles &mdash; grouped by <i>when</i> demand
-        happens, not how much. Train split only.</div>
+        K-Means, K={chosen_k}, on L1-normalised profiles &mdash; grouped by <i>when</i>
+        demand happens, not how much. Train split only.</div>
       {''.join(rows)}
       {accuracy}
     </div>"""
@@ -508,13 +644,16 @@ def export_geojson(forecaster: Forecaster, styles: dict[int, dict],
     served = forecaster.zones.merge(geo[["zone_id", "geometry"]], on="zone_id")
     written: list[Path] = []
 
+    months = forecaster.metadata.get("data_range", {}).get("months", [])
+    span = f"{months[0]}..{months[-1]}" if months else "unknown range"
+
     def collection(features: list[dict], **extra) -> dict:
         return {
             "type": "FeatureCollection",
             "crs": {"type": "name",
                     "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
             "properties": {
-                "source": "NYC TLC yellow taxi 2024-01..03, train split",
+                "source": f"NYC TLC yellow taxi {span}, train split",
                 "model": f"K-Means K={forecaster.metadata.get('chosen_k')} "
                          "on L1-normalised weekly profiles",
                 "zones": len(features),
@@ -726,6 +865,12 @@ def main() -> int:
 
     outputs: list[Path] = []
     outputs.append(plot_k_selection(chosen_k, metadata))
+    ablation_path = plot_ablation()
+    if ablation_path is not None:
+        outputs.append(ablation_path)
+    else:
+        print("  note: reports/ablation_metrics.csv missing — ablation figure "
+              "skipped (run python -m src.batch.ablation)")
     heatmap_path, shares, order = plot_heatmap(forecaster, styles)
     outputs.append(heatmap_path)
     outputs.append(build_map(forecaster, styles, metrics))

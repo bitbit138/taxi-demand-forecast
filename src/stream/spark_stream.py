@@ -1,13 +1,13 @@
 """Structured Streaming: Kafka -> windowed demand -> predicted vs actual.
 
 Consumes ``taxi-trips``, reapplies the **batch** cleaning filters, aggregates to
-tumbling 1-hour windows on event time, and serves the saved K=4 forecaster. It never
-trains: the cluster shapes and zone levels are loaded from ``models/`` exactly as
-``train_kmeans.py`` wrote them.
+tumbling 1-hour windows on event time, and serves the saved K-Means forecaster
+(whatever K ``kmeans_metadata.json`` records). It never trains: the cluster shapes
+and zone levels are loaded from ``models/`` exactly as ``train_kmeans.py`` wrote them.
 
 **Nothing is reimplemented.** The cleaning predicates come from
 ``clean_aggregate.build_filters()`` and the NY-local calendar derivation from
-``clean_aggregate.local_date_hour()``. The 223-zone modelling set is applied by joining
+``clean_aggregate.local_date_hour()``. The modelling-zone set is applied by joining
 ``modeling_zones.parquet``. Streamed per-window demand is therefore comparable to
 ``demand.parquet`` cell for cell, which ``--validate`` checks.
 
@@ -131,7 +131,7 @@ def windowed_demand(trips: DataFrame, zones: DataFrame) -> DataFrame:
         "actual_demand",
     )
 
-    # Restrict to the 223-zone modelling set so streamed zones match the model.
+    # Restrict to the modelling-zone set so streamed zones match the model.
     return windowed.join(F.broadcast(zones), on="zone_id", how="inner")
 
 
@@ -223,8 +223,8 @@ def validate(spark: SparkSession) -> bool:
         .groupBy("zone_id", "date_local", "hour_local")
         .agg(F.sum("actual_demand").cast("int").alias("streamed"))
     )
-    # demand.parquet covers all 259 zones that saw a trip; the stream serves only the
-    # 223-zone modelling set. Restrict the batch side to the same set or the comparison
+    # demand.parquet covers every zone that saw a trip; the stream serves only the
+    # modelling-zone set. Restrict the batch side to the same set or the comparison
     # reports excluded zones as phantom mismatches.
     modeling = spark.read.parquet(str(config.MODELING_ZONES_PARQUET)).select("zone_id")
     batch = (

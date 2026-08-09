@@ -1,6 +1,6 @@
 """Cluster zones by weekly demand shape with Spark MLlib K-Means.
 
-Builds the **223 x 168 zone-by-hour-of-week profile matrix** from
+Builds the **zones x 168 zone-by-hour-of-week profile matrix** from
 ``features.parquet`` — the aggregation deliberately kept out of ``features.py`` so it
 is obvious what K-Means actually consumes — sweeps K, and saves the fitted pipeline.
 
@@ -83,7 +83,7 @@ def assert_train_only(features: DataFrame) -> None:
 
 
 def build_profiles(features: DataFrame) -> DataFrame:
-    """223 x 168 matrix: mean demand per zone per hour-of-week, train rows only."""
+    """zones x 168 matrix: mean demand per zone per hour-of-week, train rows only."""
     train = features.filter(F.col("is_train"))
 
     long = (
@@ -157,7 +157,7 @@ def sweep(profiles: DataFrame, normalize: bool, label: str) -> list[dict]:
         model = make_pipeline(k, normalize).fit(profiles)
         assigned = model.transform(profiles)
         wcss = model.stages[-1].summary.trainingCost
-        # 223 points — the silhouette is exact, nothing is sampled.
+        # A few hundred points — the silhouette is exact, nothing is sampled.
         silhouette = evaluator.evaluate(assigned)
         sizes = model.stages[-1].summary.clusterSizes
         results.append(
