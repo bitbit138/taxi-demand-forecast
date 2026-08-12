@@ -139,8 +139,10 @@ def load_forecaster(spark: SparkSession) -> tuple[DataFrame, DataFrame]:
     """Load the saved artifacts. Returns ``(zones, cluster_shape)``.
 
     The live rule is cluster **shape** x the zone's own level — the same rule
-    evaluate.py scored at MAE 7.696, not the raw pooled mean (23.317) and
-    deliberately not hist_avg, which has no compact live representation.
+    evaluate.py scored at MAE 7.587 on the full-year held-out split, not the raw
+    pooled mean (20.223) and deliberately not hist_avg, which has no compact live
+    representation. (Both figures come from reports/baseline_metrics.csv; earlier
+    revisions of this docstring quoted the Q1 numbers.)
     """
     zones = spark.read.parquet(str(config.ZONE_CLUSTERS_PARQUET)).select(
         "zone_id", "cluster", "zone_mean_demand"
@@ -403,8 +405,26 @@ def main() -> int:
 
     zones, shape = load_forecaster(spark)
     modeling = spark.read.parquet(str(config.MODELING_ZONES_PARQUET)).select("zone_id")
-    zones = zones.join(F.broadcast(modeling), on="zone_id", how="inner")
-    print(f"  zones served {zones.count()} (modelling set)")
+    # The inner join is the intended restriction, but it used to be silent: a model
+    # fitted on a different range than the zone list on disk simply served fewer
+    # zones than it knew about, with nothing in the output saying so.
+    n_model_zones = zones.count()
+    zones = zones.join(F.broadcast(modeling), on="zone_id", how="inner").cache()
+    n_served = zones.count()
+    print(f"  zones served {n_served} (modelling set)")
+
+    range_warning = config.model_range_warning()
+    if range_warning or n_served != n_model_zones:
+        print("  " + "!" * 74)
+        if range_warning:
+            print(f"  WARNING: {range_warning}")
+        if n_served != n_model_zones:
+            print(f"  WARNING: the saved model covers {n_model_zones} zones but only "
+                  f"{n_served} are in {config.MODELING_ZONES_PARQUET.name} — "
+                  f"{n_model_zones - n_served} are not served.")
+        print("  Re-run src.batch.zone_policy and src.batch.train_kmeans on the same")
+        print("  TAXI_MONTHS to align them. Streaming continues on the served set.")
+        print("  " + "!" * 74)
 
     trips = clean(read_stream(spark, args.starting_offsets))
     windows = windowed_demand(trips, zones)

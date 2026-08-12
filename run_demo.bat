@@ -48,18 +48,29 @@ REM models\ is committed but data\ is gitignored, so a fresh clone passes the mo
 REM check and still has nothing to stream. Without this the consumer would exit on
 REM the first missing parquet in its own window, and this script would sit out the
 REM full READY_TIMEOUT before reporting a timeout instead of the real cause.
+REM data\external\events.csv and models\conditions_model.json are checked because
+REM this script ADVERTISES the weather/events forecaster at the end, including the
+REM "Thanksgiving is flagged automatically from events.csv" query. Without events.csv
+REM predict_live still answers, but every calendar flag reads False and the event
+REM adjustment silently disappears - the demo appears to work while showing the wrong
+REM number, which is worse than refusing to start.
 set "DEMO_MONTH=%DEMO_START:~0,7%"
 for %%P in (
     "data\raw\yellow_tripdata_%DEMO_MONTH%.parquet"
     "data\processed\demand.parquet"
     "data\processed\modeling_zones.parquet"
+    "data\external\events.csv"
+    "models\conditions_model.json"
 ) do (
     if not exist "%%~P" (
-        echo ERROR: %%~P is missing - the batch pipeline has not run in this clone.
+        echo ERROR: %%~P is missing - the pipeline has not fully run in this clone.
         echo        Minimum for this demo ^(3-month sample; leaves models\ untouched^):
         echo            .venv\Scripts\python.exe -m src.ingest.download_tlc
+        echo            .venv\Scripts\python.exe -m src.ingest.build_events
         echo            .venv\Scripts\python.exe -m src.batch.clean_aggregate
         echo            .venv\Scripts\python.exe -m src.batch.zone_policy
+        echo        events.csv alone:   -m src.ingest.build_events   ^(seconds, no network^)
+        echo        conditions model:   -m src.batch.ablation        ^(needs features.parquet^)
         echo        Or the whole pipeline:  run_pipeline_full_year.bat smoke
         exit /b 1
     )

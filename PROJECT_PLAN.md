@@ -89,7 +89,9 @@ taxi-demand-forecast/
 - [x] **Presentation** — delivered in class; the final submission is code + results (REPORT.md, notebook, reports/) via the course site.
 - [x] **Short report** referencing the three proposal papers (Sedona/GeoSpark, DMVST-Net, NYC-taxi VAST) — what you used from each.
 - [x] **`README.md`**: exact run order — `docker compose up` → download → weather → batch clean/geo/features → train → evaluate → producer → stream — with pinned versions.
-- [x] Reproducibility: fixed seeds, `requirements.txt`, a small sample committed (not raw parquet).
+- [x] Reproducibility: fixed seeds, pinned `requirements.txt` and jar coordinates. No parquet
+  under `data/` is committed (raw is re-fetched by URL); the committed artifacts are `models/`
+  and `reports/`, which is what makes every reported number checkable from a clone.
 - [ ] Submit via **Moodle** on time.
 
 ---

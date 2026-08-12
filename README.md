@@ -167,7 +167,8 @@ actually fitted on, so a Q1 artifact can never be mistaken for a full-year one.
 than `TAXI_MONTHS` configures.
 
 Expect roughly 600 MB of parquet and ~41M trips. The weather cache rebuilds in full,
-because the expected range grows from 2,183 to 8,784 hours per zone.
+because the expected range grows from 2,183 to 8,783 hours per zone (366 × 24 − 1:
+local 02:00 on 2024-03-10 does not exist).
 
 ### Two-terminal streaming demo
 
@@ -306,7 +307,7 @@ printed in full on every run rather than applied silently.
 
 | Artifact | Grain | Shape | Used by |
 | --- | --- | --- | --- |
-| `features.parquet` | one row per `(zone_id, date_local, hour_local)` | 223 × 2183 = 486,809 (Q1) · 225 × 8784 = 1,976,400 (full year) | baselines, `evaluate.py`, `ablation.py` |
+| `features.parquet` | one row per `(zone_id, date_local, hour_local)` | 223 × 2183 = 486,809 (Q1) · 225 × 8783 = 1,976,175 (full year) | baselines, `evaluate.py`, `ablation.py` |
 | profile matrix (derived in `train_kmeans.py`, not stored) | one row per zone | kept zones × 168 `(hour, dow)` | K-Means clustering |
 
 K-Means clusters *zones* by their weekly demand profile; the per-observation table is
@@ -480,4 +481,13 @@ three things that break PySpark on Windows:
 ## Reproducibility
 
 Fixed seed (`config.SEED = 42`) for KMeans and the time-based train/test split, pinned
-`requirements.txt`, pinned Spark jar coordinates. Raw parquet is not committed; a small sample is.
+`requirements.txt`, pinned Spark jar coordinates.
+
+**What is and is not committed.** No parquet under `data/` is committed — neither the
+raw TLC files nor the derived tables; `data/` is rebuilt from scratch by the ingest and
+batch steps above (`download_tlc` re-fetches the raw months, so the input is pinned by
+URL rather than by a checked-in copy). What *is* committed is the result set: `models/`
+(the saved K-Means pipeline, cluster profiles, `kmeans_metadata.json` and the conditions
+model) and `reports/` (figures, metrics tables, GeoJSON). Every number in
+[REPORT.md](REPORT.md) can therefore be checked against a committed artifact without
+re-running the pipeline, and `predict_live.py` answers queries from a fresh clone.

@@ -2,9 +2,11 @@
 
 **Row grain: one row per ``(zone_id, date_local, hour_local)``** over the modelling
 zones — kept zones x every local hour of the configured range (223 x 2183 = 486,809
-rows on the Q1 sample; 225 x 8784 = 1,976,400 on the full year). This is the
-*per-observation* table. It feeds the baseline ladder and the evaluation in
-``evaluate.py``.
+rows on the Q1 sample; 225 x 8783 = 1,976,175 on the full year). The hour counts are
+one short of 24/day because the spring-forward hour does not exist locally — 2183 =
+91 x 24 - 1, 8783 = 366 x 24 - 1 — and the grid inherits that calendar from
+``weather.parquet`` rather than assuming 24 h/day. This is the *per-observation*
+table. It feeds the baseline ladder and the evaluation in ``evaluate.py``.
 
 It is NOT the clustering input. K-Means (Decision A) clusters *zones* by their
 ``(hour, dow)`` demand profile, which is a zones-row x 168-column aggregation derived

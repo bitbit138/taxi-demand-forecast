@@ -10,6 +10,7 @@ Scripts live under ``src/`` and are run from the repo root, e.g.::
 from __future__ import annotations
 
 import calendar
+import json
 import os
 import re
 import subprocess
@@ -167,6 +168,36 @@ def require_supported_java() -> str:
             f"Point JAVA_HOME at a Java {'/'.join(map(str, SUPPORTED_JAVA_MAJORS))} JDK."
         )
     return java_home
+
+
+def model_range_warning() -> str | None:
+    """Message if the saved model was fitted on a different range than ``MONTHS``.
+
+    ``models/`` and ``data/processed/`` are written by separate runs, so a full-year
+    model can end up sitting beside a 3-month zone list — which silently changes
+    which zones are served and which names they resolve to. ``train_kmeans.py``
+    makes this comparison before *fitting*; this is the serving-side equivalent,
+    used by ``predict_live.py`` and ``spark_stream.py``.
+
+    Returns None when the ranges agree, when no metadata exists, or when the
+    metadata predates the ``data_range`` field.
+    """
+    if not KMEANS_METADATA_JSON.exists():
+        return None
+    try:
+        fitted = json.loads(KMEANS_METADATA_JSON.read_text()).get("data_range") or {}
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    months = fitted.get("months")
+    if not months or sorted(months) == sorted(MONTHS):
+        return None
+    return (
+        f"the saved model was fitted on {len(months)} month(s) "
+        f"({months[0]}..{months[-1]}) but TAXI_MONTHS configures {len(MONTHS)} "
+        f"({MONTHS[0]}..{MONTHS[-1]}) — artifacts in models/ and data/processed/ "
+        "come from different runs"
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -91,6 +91,7 @@ metric is **WAPE** (the grid is ~46% zero bins, where MAPE is undefined):
 | Per-zone mean | 13.46 | 38.80 | 63.1% |
 | Historical avg (zone, hour, dow) | 5.44 | 18.20 | 25.5% |
 | Moving avg (same hour-of-week, 4w)* | 5.14 | 17.63 | 24.1% |
+| Weighted MA (4w, linear)* | 5.33 | 18.41 | 25.0% |
 | EWMA (4w, α=0.3)* | 5.28 | 18.19 | 24.7% |
 | Cluster mean (raw pooled) | 20.22 | 49.53 | 94.8% |
 | Cluster shape × zone level (K-Means) | 7.59 | 24.61 | 35.6% |

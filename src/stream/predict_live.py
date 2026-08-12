@@ -130,12 +130,22 @@ class Forecaster:
         names = pd.read_parquet(config.MODELING_ZONES_PARQUET)[
             ["zone_id", "zone_name", "borough", "total_trips"]
         ]
-        self.zones = self.zones.merge(names, on="zone_id", how="left")
+        # INNER, not left. A zone present in the saved model but absent from the
+        # current modelling-zone list has no name, no borough and no place in the
+        # served set — a left join kept it and answered "zone 6 (nan, nan)" with a
+        # number nobody should act on. It also made this tool claim more served zones
+        # than spark_stream.py, which inner-joins the same two artifacts. Dropping
+        # here keeps predict(), is_served(), reject() and the stream in agreement.
+        n_model_zones = len(self.zones)
+        self.zones = self.zones.merge(names, on="zone_id", how="inner")
+        self.unnamed_zones = n_model_zones - len(self.zones)
+
         self.metadata = (
             json.loads(config.KMEANS_METADATA_JSON.read_text())
             if config.KMEANS_METADATA_JSON.exists()
             else {}
         )
+        self._warn_artifact_mismatch()
         self._characters = self._describe_clusters()
 
         # Conditions model (optional): trained by src/batch/ablation.py. Absent ->
@@ -152,6 +162,30 @@ class Forecaster:
         self.events: pd.DataFrame | None = None
         if Path(config.EVENTS_CSV).exists():
             self.events = pd.read_csv(config.EVENTS_CSV).set_index("date_local")
+
+    def _warn_artifact_mismatch(self) -> None:
+        """Say so on stderr when models/ and data/processed/ disagree.
+
+        Written to stderr, not stdout, so ``--json`` output stays machine-readable.
+        """
+        notes = []
+        range_warning = config.model_range_warning()
+        if range_warning:
+            notes.append(range_warning)
+        if self.unnamed_zones:
+            notes.append(
+                f"{self.unnamed_zones} zone(s) in {config.ZONE_CLUSTERS_PARQUET.name} "
+                f"are absent from {config.MODELING_ZONES_PARQUET.name} and are NOT "
+                f"served ({len(self.zones)} zones served)"
+            )
+        for note in notes:
+            print(f"WARNING: {note}", file=sys.stderr)
+        if notes:
+            print(
+                "         Re-run src.batch.zone_policy and src.batch.train_kmeans on "
+                "the same TAXI_MONTHS to align them.",
+                file=sys.stderr,
+            )
 
     def _describe_clusters(self) -> dict[int, dict]:
         """Label each cluster from its own shape — never hard-coded.

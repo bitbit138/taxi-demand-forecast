@@ -151,6 +151,35 @@ echo [D] Render report figures, map and GeoJSON
 "%VENV_PY%" -m src.viz.make_maps
 if errorlevel 1 (set "STEP=D make_maps" & goto :fail)
 
+REM Steps E-G produce results REPORT.md leads with (significance CIs, association
+REM rules, the scaling curve). They used to be documented in the README but absent
+REM from this launcher, so a full run left three committed artifacts stale.
+echo.
+echo [E] Block bootstrap - is the weather/events gain statistically real?
+"%VENV_PY%" -m src.batch.significance
+if errorlevel 1 (set "STEP=E significance" & goto :fail)
+
+REM association_rules and benchmark_scale both refuse to run unless
+REM TAXI_MONTHS=full: the cleaning predicates clip to the configured range, so on
+REM the sample they would mine a quarter and call it a year.
+if "%MODE%"=="smoke" (
+    echo.
+    echo   Skipping [F] association_rules and [G] benchmark_scale - both require
+    echo   TAXI_MONTHS=full and refuse the 3-month sample by design.
+    goto :complete
+)
+
+echo.
+echo [F] FP-Growth association rules - pickup to dropoff flows
+"%VENV_PY%" -m src.batch.association_rules
+if errorlevel 1 (set "STEP=F association_rules" & goto :fail)
+
+echo.
+echo [G] Scaling benchmark - wall-clock vs input size
+"%VENV_PY%" -m src.batch.benchmark_scale
+if errorlevel 1 (set "STEP=G benchmark_scale" & goto :fail)
+
+:complete
 echo.
 echo ============================================================================
 echo  PIPELINE COMPLETE - %RUN_LABEL%  (K=%CHOSEN_K%)
@@ -161,7 +190,10 @@ echo                    kmeans_metadata.json (records chosen K + both sweeps),
 echo                    conditions_model.json, hist_avg.parquet
 echo   reports\         k_selection.png, zone_hour_heatmap.png, cluster_map.html,
 echo                    geojson\, k_sweep.csv, baseline_metrics.csv,
-echo                    ablation_metrics.csv
+echo                    ablation_metrics.csv, ablation_wape.png, error_map.html,
+echo                    significance.csv
+echo                    association_rules.csv + scale_benchmark.csv on full-year
+echo                    runs only ^(both refuse the 3-month sample^)
 echo.
 echo   Streaming demo:  run_demo.bat
 endlocal
