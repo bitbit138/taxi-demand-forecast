@@ -58,13 +58,25 @@ for _d in (RAW_DIR, EXTERNAL_DIR, PROCESSED_DIR, MODELS_DIR, REPORTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # --------------------------------------------------------------------------- #
-# Date range — iterate on the 3-month sample, switch to full-year for finals
+# Date range — full-year 2024 by default; the 3-month sample is opt-in
 # --------------------------------------------------------------------------- #
 SAMPLE_MONTHS = ["2024-01", "2024-02", "2024-03"]
 FULL_YEAR_MONTHS = [f"2024-{m:02d}" for m in range(1, 13)]
 
-# Flip via env var so no code edit is needed: TAXI_MONTHS=full
-USE_FULL_YEAR = os.getenv("TAXI_MONTHS", "sample").lower() == "full"
+# The submitted results ARE the full-year run — models/kmeans_metadata.json records
+# data_range 2024-01..2024-12 — so full year is the default and an unset TAXI_MONTHS
+# now means 12 months. When the default was the sample, a bare `python -m ...` built
+# Q1 artifacts beside a full-year model, and the two disagreed on which zones exist
+# (223 vs 225): see model_range_warning() below, which exists to catch exactly that.
+# Iterate on the quarter with TAXI_MONTHS=sample.
+_MONTHS_MODE = os.getenv("TAXI_MONTHS", "full").strip().lower()
+if _MONTHS_MODE not in ("full", "sample"):
+    # Silently falling back would pick a range nobody asked for, which is how a
+    # typo'd env var turns into a mismatched artifact set hours later.
+    raise ValueError(
+        f"TAXI_MONTHS must be 'full' or 'sample' (got {_MONTHS_MODE!r})."
+    )
+USE_FULL_YEAR = _MONTHS_MODE == "full"
 MONTHS = FULL_YEAR_MONTHS if USE_FULL_YEAR else SAMPLE_MONTHS
 
 _first_year, _first_month = (int(x) for x in MONTHS[0].split("-"))

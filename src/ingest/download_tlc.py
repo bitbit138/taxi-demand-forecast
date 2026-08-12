@@ -1,6 +1,6 @@
 """Download NYC TLC yellow-taxi monthly parquet + the taxi-zone reference files.
 
-Downloads the months listed in ``config.MONTHS`` (default: the 2024-01..2024-03 sample)
+Downloads the months listed in ``config.MONTHS`` (default: all 12 months of 2024)
 into ``data/raw/``, plus ``taxi_zone_lookup.csv`` and the taxi-zone shapefile into
 ``data/external/``.
 
@@ -8,9 +8,9 @@ Idempotent: a file already present with a matching size is skipped, so re-runnin
 cheap. Downloads land in a ``.part`` file and are renamed only on success, so an
 interrupted run never leaves a truncated parquet behind.
 
-    python -m src.ingest.download_tlc                 # sample months
+    python -m src.ingest.download_tlc --yes           # the 12 months of 2024, ~600 MB
     python -m src.ingest.download_tlc --months 2024-04 2024-05
-    TAXI_MONTHS=full python -m src.ingest.download_tlc --yes   # all 12 months of 2024
+    TAXI_MONTHS=sample python -m src.ingest.download_tlc        # the Q1 sample only
 """
 
 from __future__ import annotations

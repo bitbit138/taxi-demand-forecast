@@ -84,11 +84,13 @@ docker compose ps                              # kafka healthy, kafka-init exite
 
 ### Batch pipeline, in dependency order
 
-Activate the venv first (`.\.venv\Scripts\Activate.ps1`). Default is the 3-month
-sample; see *Full-year run* below to switch.
+Activate the venv first (`.\.venv\Scripts\Activate.ps1`). **The default range is
+full-year 2024**, which is what the committed `models/` and `reports/` were built
+from; set `TAXI_MONTHS=sample` for the 3-month quarter while iterating. Because K is
+re-chosen on the full year, the full run is two phases — see *Full-year run* below.
 
 ```powershell
-python -m src.ingest.download_tlc          # --yes required for >3 months
+python -m src.ingest.download_tlc --yes    # --yes confirms >3 months (~600 MB)
 python -m src.ingest.fetch_weather         # idempotent; re-runs skip cached zones
 python -m src.ingest.build_events          # always covers the whole year
 python -m src.batch.clean_aggregate        # --force to write despite a funnel warning
@@ -105,8 +107,8 @@ python -m src.viz.make_maps
 
 | Script | Argument | Effect |
 | --- | --- | --- |
-| *(environment)* | `TAXI_MONTHS=full` | 12 months of 2024 instead of the Q1 sample. Read by `config.py`, so it applies to **every** script — set it once per shell. |
-| `download_tlc` | `--yes` | Required to download more than the 3-month sample. Also `--months 2024-04 2024-05`, `--force`. |
+| *(environment)* | `TAXI_MONTHS` | `full` (the default) = 12 months of 2024, matching the committed model's `data_range`; `sample` = the 2024-01..2024-03 quarter. Read by `config.py`, so it applies to **every** script — set it once per shell. Any other value is rejected at import rather than silently falling back. |
+| `download_tlc` | `--yes` | Required to download more than 3 months — i.e. required by default. Also `--months 2024-04 2024-05`, `--force`. |
 | `clean_aggregate` | `--force` | Write output even if a cleaning filter drops >10% of rows. Without it the job stops and shows the funnel. |
 | `train_kmeans` | `--inspect` | Sweep K, describe the clusters at the top candidate K values, save nothing. How you choose K on new data. `--candidates N` sets how many to describe (default 3). |
 | `train_kmeans` | `--k N` | Pin K and save the model. Omit both `--k` and `--inspect` to be shown the disagreement and take the default. `--skip-raw` skips the volume-vs-shape comparison sweep. |
@@ -127,7 +129,7 @@ before anything is saved. The run is therefore two phases.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-$env:TAXI_MONTHS = "full"
+$env:TAXI_MONTHS = "full"   # the default; set it explicitly if the shell may hold "sample"
 
 python -m src.ingest.download_tlc --yes
 python -m src.ingest.fetch_weather
