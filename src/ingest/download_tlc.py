@@ -44,13 +44,20 @@ def _human(num_bytes: float) -> str:
 
 
 def _remote_size(url: str) -> int | None:
-    """Content-Length for *url*, or None if the server does not report it."""
+    """Content-Length for *url*, or None if the server does not report it.
+
+    The CDN answers HEAD on taxi_zone_lookup.csv with ``Content-Length: 0`` even
+    though the GET returns ~12 KB. Zero is therefore "unknown", not "empty file":
+    taken literally it fails every download as a short read, and re-fetches the
+    file forever because the cached copy can never match.
+    """
     try:
         response = requests.head(url, timeout=TIMEOUT, allow_redirects=True)
         response.raise_for_status()
-        return int(response.headers["Content-Length"])
+        size = int(response.headers["Content-Length"])
     except (requests.RequestException, KeyError, ValueError):
         return None
+    return size if size > 0 else None
 
 
 def download(url: str, dest: Path, force: bool = False) -> tuple[bool, int]:

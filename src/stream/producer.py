@@ -60,6 +60,11 @@ FIELD_NAMES = [name for name, _ in config.KAFKA_MESSAGE_FIELDS]
 # Columns to read from parquet: the message fields, all of which are TLC columns.
 READ_COLUMNS = list(dict.fromkeys(FIELD_NAMES))
 
+# Topic reset: how long one delete gets to take effect, and how many deletes to try
+# when something recreates the topic underneath us (see reset_topic).
+RESET_ABSENT_TIMEOUT_S = 20
+RESET_DELETE_ATTEMPTS = 3
+
 
 def _import_kafka():
     """Import kafka lazily so --dry-run works without a broker installed."""
@@ -147,35 +152,66 @@ def topic_message_count(admin_cls, bootstrap: str) -> int:
         consumer.close()
 
 
+def _wait_until_absent(admin, timeout_s: int) -> bool:
+    """True once the broker stops listing the topic. Deletion is asynchronous."""
+    for _ in range(timeout_s):
+        time.sleep(1.0)
+        if config.KAFKA_TOPIC not in admin.list_topics():
+            return True
+    return False
+
+
 def reset_topic(admin_cls, new_topic_cls, unknown_topic_exc, bootstrap: str) -> None:
-    """Delete and recreate the topic so a demo starts from a clean slate."""
+    """Delete and recreate the topic so a demo starts from a clean slate.
+
+    A single delete is not enough to guarantee the topic stays gone. Two things
+    recreate it behind our back: the broker runs with auto.create.topics.enable=true,
+    so any client asking for its metadata resurrects it, and docker-compose's
+    ``kafka-init`` container re-runs ``--create --if-not-exists`` on every
+    ``docker compose up -d``. Losing that race used to look like "the delete never
+    took effect" and failed the demo, so re-issue the delete instead of giving up.
+    """
     admin = admin_cls(bootstrap_servers=bootstrap, client_id="taxi-producer-admin")
     try:
-        try:
-            admin.delete_topics([config.KAFKA_TOPIC])
-            print(f"  deleted topic {config.KAFKA_TOPIC}")
-        except unknown_topic_exc:
-            print(f"  topic {config.KAFKA_TOPIC} did not exist")
+        for attempt in range(1, RESET_DELETE_ATTEMPTS + 1):
+            try:
+                admin.delete_topics([config.KAFKA_TOPIC])
+                print(f"  deleted topic {config.KAFKA_TOPIC}")
+            except unknown_topic_exc:
+                print(f"  topic {config.KAFKA_TOPIC} did not exist")
 
-        # Deletion is asynchronous; recreate once the broker has dropped it.
-        for attempt in range(30):
-            time.sleep(1.0)
-            if config.KAFKA_TOPIC not in admin.list_topics():
-                break
-        else:
-            raise TimeoutError(f"{config.KAFKA_TOPIC} still present after 30s")
-
-        admin.create_topics(
-            [
-                new_topic_cls(
-                    name=config.KAFKA_TOPIC,
-                    num_partitions=config.KAFKA_NUM_PARTITIONS,
-                    replication_factor=config.KAFKA_REPLICATION_FACTOR,
+            if _wait_until_absent(admin, RESET_ABSENT_TIMEOUT_S):
+                admin.create_topics(
+                    [
+                        new_topic_cls(
+                            name=config.KAFKA_TOPIC,
+                            num_partitions=config.KAFKA_NUM_PARTITIONS,
+                            replication_factor=config.KAFKA_REPLICATION_FACTOR,
+                        )
+                    ]
                 )
-            ]
+                print(f"  recreated topic {config.KAFKA_TOPIC} "
+                      f"({config.KAFKA_NUM_PARTITIONS} partitions)")
+                return
+
+            print(f"  {config.KAFKA_TOPIC} was recreated within "
+                  f"{RESET_ABSENT_TIMEOUT_S}s (attempt {attempt}/"
+                  f"{RESET_DELETE_ATTEMPTS}) — retrying the delete")
+
+        # Whatever recreated it made a *fresh* topic, so the only thing this function
+        # actually owes the demo — an empty topic — may already hold. Accept that
+        # rather than failing; only a topic with messages on it is a real problem.
+        remaining = topic_message_count(admin_cls, bootstrap)
+        if remaining == 0:
+            print(f"  {config.KAFKA_TOPIC} keeps being recreated (kafka-init or "
+                  f"broker auto-create) but is empty — continuing")
+            return
+        raise TimeoutError(
+            f"{config.KAFKA_TOPIC} still holds {remaining:,} messages after "
+            f"{RESET_DELETE_ATTEMPTS} delete attempts — a live client keeps "
+            f"recreating it. Close any stray demo windows (Spark stream, producer) "
+            f"and re-run."
         )
-        print(f"  recreated topic {config.KAFKA_TOPIC} "
-              f"({config.KAFKA_NUM_PARTITIONS} partitions)")
     finally:
         admin.close()
 

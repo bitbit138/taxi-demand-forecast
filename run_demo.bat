@@ -44,6 +44,27 @@ if not exist "models\cluster_demand.parquet" (
     exit /b 1
 )
 
+REM models\ is committed but data\ is gitignored, so a fresh clone passes the model
+REM check and still has nothing to stream. Without this the consumer would exit on
+REM the first missing parquet in its own window, and this script would sit out the
+REM full READY_TIMEOUT before reporting a timeout instead of the real cause.
+set "DEMO_MONTH=%DEMO_START:~0,7%"
+for %%P in (
+    "data\raw\yellow_tripdata_%DEMO_MONTH%.parquet"
+    "data\processed\demand.parquet"
+    "data\processed\modeling_zones.parquet"
+) do (
+    if not exist "%%~P" (
+        echo ERROR: %%~P is missing - the batch pipeline has not run in this clone.
+        echo        Minimum for this demo ^(3-month sample; leaves models\ untouched^):
+        echo            .venv\Scripts\python.exe -m src.ingest.download_tlc
+        echo            .venv\Scripts\python.exe -m src.batch.clean_aggregate
+        echo            .venv\Scripts\python.exe -m src.batch.zone_policy
+        echo        Or the whole pipeline:  run_pipeline_full_year.bat smoke
+        exit /b 1
+    )
+)
+
 REM HADOOP_HOME must be set BEFORE spark-submit: it launches the JVM itself, so
 REM config.configure_hadoop_home() - which sets it from inside the Python driver -
 REM runs too late and Spark dies with "HADOOP_HOME and hadoop.home.dir are unset".
@@ -56,8 +77,16 @@ REM Call the venv's executables by full path. A Microsoft Store Python 3.12 on t
 REM machine also ships pyspark, and its spark-submit resolves a different SPARK_HOME.
 set "VENV_PY=%CD%\.venv\Scripts\python.exe"
 set "SPARK_SUBMIT=%CD%\.venv\Scripts\spark-submit.cmd"
-set "PYSPARK_PYTHON=%VENV_PY%"
-set "PYSPARK_DRIVER_PYTHON=%VENV_PY%"
+
+REM spark-submit's .cmd wrapper expands %PYSPARK_DRIVER_PYTHON% unquoted, so a path
+REM with spaces ("Year 3") makes it print a harmless but alarming "The system cannot
+REM find the path specified." before Spark starts. Hand it the 8.3 short name instead:
+REM same interpreter, no spaces, no message. On a volume with 8.3 names disabled the
+REM expansion returns the long path and the (still harmless) message comes back.
+for %%I in ("%VENV_PY%") do set "VENV_PY_SHORT=%%~sI"
+if not defined VENV_PY_SHORT set "VENV_PY_SHORT=%VENV_PY%"
+set "PYSPARK_PYTHON=%VENV_PY_SHORT%"
+set "PYSPARK_DRIVER_PYTHON=%VENV_PY_SHORT%"
 
 REM SPARK_HOME must be set too. PySpark's find-spark-home.cmd shells out to the
 REM Python executable without quoting the path, so a repo path containing spaces
@@ -91,6 +120,31 @@ echo        ... %HEALTH% (%WAITED%s)
 goto :health
 :healthy
 echo        broker healthy.
+
+REM `docker compose up -d` returns as soon as taxi-kafka-init has STARTED, and that
+REM one-shot container runs `kafka-topics.sh --create --if-not-exists taxi-trips` a
+REM few seconds later. If that create lands after step [3/5]'s delete, the topic
+REM reappears immediately and the reset reports "still present after 30s" - the topic
+REM was deleted, then recreated behind it. Wait for the container to exit first.
+echo        waiting for taxi-kafka-init to finish...
+set /a WAITED=0
+:initwait
+set "INIT_STATE="
+for /f "tokens=*" %%S in ('docker inspect -f "{{.State.Status}}" taxi-kafka-init 2^>nul') do set "INIT_STATE=%%S"
+REM No such container (e.g. `docker compose up -d kafka` only): nothing to wait for.
+if "%INIT_STATE%"=="" goto :initdone
+if /i "%INIT_STATE%"=="exited" goto :initdone
+if %WAITED% GEQ 60 (
+    echo ERROR: taxi-kafka-init still %INIT_STATE% after 60s.
+    echo        Check: docker compose logs kafka-init
+    goto :fail
+)
+ping -n 4 127.0.0.1 >nul 2>&1
+set /a WAITED+=3
+echo        ... %INIT_STATE% (%WAITED%s)
+goto :initwait
+:initdone
+echo        topic init done.
 
 REM Reset BEFORE any consumer attaches: deleting a topic that a running query is
 REM subscribed to can fault the query on a vanished topic.
