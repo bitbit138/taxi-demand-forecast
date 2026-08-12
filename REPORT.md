@@ -158,21 +158,25 @@ The Big-Data claim is that the pipeline is distributed by design: the same code
 runs unchanged on one month or twelve. `src/batch/benchmark_scale.py` measures it —
 the core path (read → clean with the exact production predicates → aggregate to
 `(zone, date, hour)`) over growing month windows, cold-cache, after a discarded
-warm-up run (Apple M-series, 8 cores, `local[*]`):
+warm-up run (AMD64, 16 cores, `local[*]` — the submission machine):
 
 | Window | Rows in | Cells out | Wall-clock | Throughput |
 | --- | --- | --- | --- | --- |
-| 1 month | 2.96M | 72.7k | 1.14 s | 2.60M rows/s |
-| 3 months | 9.55M | 226.7k | 2.42 s | 3.94M rows/s |
-| 6 months | 20.3M | 484.3k | 4.95 s | 4.11M rows/s |
-| 12 months | 41.2M | 1.01M | 9.19 s | 4.48M rows/s |
+| 1 month | 2.96M | 72.7k | 4.12 s | 0.72M rows/s |
+| 3 months | 9.55M | 226.7k | 4.22 s | 2.26M rows/s |
+| 6 months | 20.3M | 484.3k | 7.21 s | 2.82M rows/s |
+| 12 months | 41.2M | 1.01M | 10.50 s | 3.92M rows/s |
 
-**14× the rows takes 8× the time** — sub-linear, because fixed per-job overhead
-amortises while per-partition scan cost stays constant. Nothing in the pipeline ever
-collects raw data to the driver, so the execution graph is identical on a cluster;
-this curve is the single-node floor of a horizontally scalable job, which is what
-lets one year here stand in for the multi-year, multi-hundred-million-row corpus
-the same code would process on real hardware.
+**14× the rows takes 2.5× the time** — strongly sub-linear, because fixed per-job
+overhead dominates the small windows and amortises away as they grow: effective
+throughput climbs 5.4× (0.72 → 3.92M rows/s) while the per-partition scan cost per
+row stays flat. Wall-clock is machine-specific — an earlier run on an 8-core arm64
+laptop was faster in absolute terms (9.19 s for 12 months) and produced the same
+sub-linear shape — so the *shape* of the curve is the result, not the seconds.
+Nothing in the pipeline ever collects raw data to the driver, so the execution graph
+is identical on a cluster; this curve is the single-node floor of a horizontally
+scalable job, which is what lets one year here stand in for the multi-year,
+multi-hundred-million-row corpus the same code would process on real hardware.
 
 ## 7. Streaming and live prediction
 
