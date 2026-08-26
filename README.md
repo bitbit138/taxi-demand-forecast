@@ -172,6 +172,44 @@ Expect roughly 600 MB of parquet and ~41M trips. The weather cache rebuilds in f
 because the expected range grows from 2,183 to 8,783 hours per zone (366 × 24 − 1:
 local 02:00 on 2024-03-10 does not exist).
 
+### Local web console (presentation GUI)
+
+```powershell
+.un_gui.bat            # export the payload, serve gui\ at http://localhost:8765
+.un_gui.bat serve      # skip the export, serve what is committed
+.un_gui.bat build      # export only
+```
+
+A **static local web app** that serves the trained model in the browser: pick a zone
+and an hour, move the rain and temperature sliders, and the forecast and the whole
+225-zone choropleth update live. No Spark, no Kafka, no network — `run_gui.bat` only
+starts `python -m http.server` on `127.0.0.1`, and the model arithmetic runs in
+JavaScript.
+
+`python -m src.viz.build_gui` is what makes that possible: it exports the fitted
+coefficients, the `(zone, hour, dow)` history table, the cluster shapes, the event
+calendar and the zone polygons into `gui/payload.json`, then **re-applies the model
+from the JSON it just wrote and compares against `predict_live.py`** over 400 random
+queries. A lossy export fails the build instead of shipping a wrong number
+(current: max difference 5.4e-07).
+
+Two builds are written, because a demo should not depend on a server:
+
+| File | How to open | Why |
+| --- | --- | --- |
+| `gui/index.html` + `gui/payload.json` | `run_gui.bat` → `localhost:8765` | the normal path |
+| `gui/standalone.html` | double-click it | payload inlined, works from disk with no server |
+
+Opening `gui/index.html` straight from disk cannot fetch the payload (same-origin
+policy); the page detects that and says which of the two options to use instead.
+
+What it shows: the forecast broken into history → calendar → weather → events as a
+waterfall; the shape model's answer beside it (the number the Kafka/Spark stream
+serves for the same cell); the city choropleth with a *fixed* absolute colour scale,
+so sweeping the week shows demand actually moving rather than a rescaled palette; and
+the evidence deck — baseline ladder, bootstrap confidence intervals, the five cluster
+weekly curves, the scaling curve and the top association rules.
+
 ### Two-terminal streaming demo
 
 `.\run_demo.bat` does the whole sequence. By hand, in two terminals:
@@ -242,8 +280,9 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-
 | 15 | `spark-submit ... src\stream\spark_stream.py` | windowed predicted-vs-actual demand |
 | 16 | `python -m src.stream.predict_live` | single live query -> predicted demand (shape + conditions models) |
 | 17 | `python -m src.viz.make_maps` | Folium maps (clusters + error analysis), GeoJSON, plots |
+| 18 | `run_gui.bat` | local web console — exports `gui/payload.json` then serves `gui/` on `http://localhost:8765` |
 
-> All 17 steps are implemented; the write-up is [REPORT.md](REPORT.md).
+> All 18 steps are implemented; the write-up is [REPORT.md](REPORT.md).
 
 ---
 
@@ -261,7 +300,8 @@ src/ingest/             download_tlc, fetch_weather, build_events
 src/batch/              clean_aggregate, geo_join, features, train_kmeans, evaluate,
                         ablation
 src/stream/             producer, spark_stream, predict_live
-src/viz/                make_maps
+src/viz/                make_maps, build_gui
+gui/                    local web console — index.html + styles/model/app, payload.json
 notebooks/              results_walkthrough.ipynb — executed presentation layer
                         over the artifacts; pipeline logic lives in src/
 ```

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Demand Console — Course 10351</title>
+<meta name="description" content="Live browser console for the NYC taxi demand forecast: query any zone and hour, change the weather, watch predicted demand move across 225 zones.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23f5b921'/><rect x='6' y='13' width='20' height='9' fill='%23101416'/><rect x='10' y='8' width='12' height='6' fill='%23101416'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="top">
+  <h1>NYC Demand Console</h1>
+  <span class="label">Course 10351 &middot; live forecast from the full-year 2024 model</span>
+  <div class="meta">
+    <span id="metaZones">225 zones</span>
+    <span id="metaK">K=5 clusters</span>
+    <span>39.2M cleaned trips</span>
+    <span>Tom Bitran &middot; Lee Rosenblit</span>
+  </div>
+  <button class="themebtn" id="theme" type="button" title="Switch light / dark">Dark</button>
+</header>
+
+<div class="loadfail" id="loadfail" hidden>
+  <b>The data payload could not be loaded.</b>
+  <p>A browser opening <code>index.html</code> straight from disk blocks the
+  <code>payload.json</code> fetch (same-origin policy). Two ways round it:</p>
+  <ol>
+    <li>Run <code>run_gui.bat</code> and use <code>http://localhost:8765</code> — this
+    page, served properly.</li>
+    <li>Or open <code>gui/standalone.html</code>, which has the payload inlined and needs
+    no server at all.</li>
+  </ol>
+  <p>If neither exists yet, build them first:
+  <code>python -m src.viz.build_gui</code></p>
+</div>
+
+<div class="console" id="console" hidden>
+
+  <!-- ── Controls ─────────────────────────────────────────────────────── -->
+  <aside class="rail">
+    <div class="field">
+      <label class="label" for="zone">Pickup zone</label>
+      <select id="zone"></select>
+    </div>
+
+    <div class="field">
+      <label class="label" for="date">Date <span class="val" id="dateFlags">ordinary day</span></label>
+      <input type="date" id="date" value="2024-11-28" min="2024-01-01" max="2024-12-31">
+    </div>
+
+    <div class="field">
+      <label class="label" for="rain">Rain <span class="val" id="rainVal">0 mm</span></label>
+      <input type="range" id="rain" min="0" max="25" step="0.5" value="0">
+    </div>
+
+    <div class="field">
+      <label class="label" for="temp">Temperature <span class="val" id="tempVal">auto</span></label>
+      <input type="range" id="temp" min="-12" max="38" step="0.5" value="10">
+    </div>
+
+    <label class="check">
+      <input type="checkbox" id="force"> Force the event flag on
+    </label>
+
+    <div class="railbtns">
+      <button class="ghost" id="resetCond" type="button">Reset conditions</button>
+    </div>
+
+    <div class="field">
+      <span class="label">Demo presets</span>
+      <div class="preset" id="presets"></div>
+    </div>
+
+    <p class="note">Every number here is computed in this page from the coefficients
+      <code>ablation.py</code> fitted and exported to
+      <code>models/conditions_model.json</code> — the same arithmetic
+      <code>predict_live.py</code> runs in pandas, checked against it on every build.</p>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- Answer -->
+    <section class="panel">
+      <header>
+        <span class="label">Forecast</span>
+        <span class="label" id="whenLabel"></span>
+      </header>
+      <div class="body answer">
+        <div class="hero">
+          <div class="fig" id="heroFig">&mdash;</div>
+          <div class="unit">trips expected this hour</div>
+          <div class="where" id="heroWhere"></div>
+          <div class="shape" id="heroShape"></div>
+        </div>
+        <div>
+          <div class="label" style="margin-bottom:.625rem;">How it got there</div>
+          <div class="fall" id="fall"></div>
+          <div class="assumed" id="assumed"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Map -->
+    <section class="panel">
+      <header>
+        <span class="label">The whole city, same conditions</span>
+        <span class="label" id="mapWhen"></span>
+      </header>
+      <div class="body">
+        <div class="mapwrap">
+          <div>
+            <svg class="map" id="map" role="img" aria-labelledby="mapDesc"></svg>
+            <p id="mapDesc" class="note" style="margin:.625rem 0 0;">
+              Predicted demand per zone under the conditions on the left. Click a zone to
+              query it. Drag the scrubber, or sweep the week, and watch demand move from
+              the residential edges into the core and out to the nightlife zones.</p>
+            <div class="scrub">
+              <button class="play" id="play" type="button">Sweep week</button>
+              <input type="range" id="hour" min="0" max="23" step="1" value="15"
+                     aria-label="Hour of day">
+              <span class="label" id="hourLabel" style="min-width:5.5rem;text-align:right;"></span>
+            </div>
+          </div>
+          <div class="legend" id="legend">
+            <span class="label">Trips / hour</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Evidence -->
+    <section class="panel">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tab-ladder" aria-controls="p-ladder" aria-selected="true">Baselines</button>
+        <button role="tab" id="tab-sig" aria-controls="p-sig" aria-selected="false">Significance</button>
+        <button role="tab" id="tab-cl" aria-controls="p-cl" aria-selected="false">Clusters</button>
+        <button role="tab" id="tab-scale" aria-controls="p-scale" aria-selected="false">Scale &amp; flows</button>
+      </div>
+
+      <div class="tabpanel" id="p-ladder" role="tabpanel" aria-labelledby="tab-ladder">
+        <p class="note">Held-out test split, N = 399,600 (zone, hour) cells,
+          2024-10-19 &rarr; 12-31. Bars are WAPE — total absolute error as a share of total
+          demand. Shorter is better.</p>
+        <div class="ladder" id="ladder"></div>
+        <p class="note">Methods marked <span class="peek">sees recent actuals</span> read
+          observed demand from previous weeks at inference time — a real information
+          advantage over the frozen models. Among models frozen at training time, the
+          conditions model wins MAE <em>and</em> RMSE.</p>
+      </div>
+
+      <div class="tabpanel" id="p-sig" role="tabpanel" aria-labelledby="tab-sig" hidden>
+        <p class="note">Relative WAPE improvement of the conditions model over history
+          alone, block-bootstrapped over whole test days (10,000 replicates, seed 42). The
+          day is the resampling unit because one storm correlates every error inside it. An
+          interval clear of zero is a real improvement.</p>
+        <div class="sig" id="sig"></div>
+      </div>
+
+      <div class="tabpanel" id="p-cl" role="tabpanel" aria-labelledby="tab-cl" hidden>
+        <p class="note">K-Means over each zone&rsquo;s 168-hour weekly profile,
+          L1-normalised so it clusters <em>when</em> a zone is busy, not how busy. Each
+          curve is that cluster&rsquo;s mean share of weekly demand across the week; the
+          gold mark is its peak. Chips match the colours in
+          <code>reports/cluster_map.html</code>.</p>
+        <div class="clusters" id="clusters"></div>
+      </div>
+
+      <div class="tabpanel" id="p-scale" role="tabpanel" aria-labelledby="tab-scale" hidden>
+        <p class="note">The same code path over growing month windows, cold-cache, after a
+          discarded warm-up. Wall-clock is machine-specific; the shape of the curve is the
+          result.</p>
+        <div class="scroller">
+          <table id="bench">
+            <thead><tr><th>Window</th><th class="r">Rows in</th><th class="r">Wall-clock</th>
+              <th class="r">Throughput</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="note">FP-Growth over all 39.2M cleaned trips — 65 directed
+          pickup&nbsp;&rarr;&nbsp;dropoff rules clear support 0.1% / confidence 5%. The
+          highest-lift flows are reciprocal neighbour pairs: yellow-taxi demand is
+          hyper-local.</p>
+        <div class="scroller">
+          <table id="rules">
+            <thead><tr><th>Pickup</th><th>Dropoff</th><th class="r">Lift</th>
+              <th class="r">Confidence</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer class="foot">
+  <span>Model: OLS, time + weather + events, fitted 2024-01-01&ndash;10-18</span>
+  <span>Shape model: cluster share &times; zone level — identical to the Kafka/Spark stream</span>
+  <span>Rebuild: <code>python -m src.viz.build_gui</code></span>
+</footer>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+
+<script src="model.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
