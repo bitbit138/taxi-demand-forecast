@@ -400,7 +400,7 @@ def cmd_gui(args: argparse.Namespace) -> None:
         fail("gui/payload.json is missing - run  python run.py gui  (no arguments).")
 
     port = args.port
-    url = f"http://localhost:{port}/"
+    url = f"http://127.0.0.1:{port}/"  # not "localhost": browsers may try ::1 first
     print(f"\n[2/2] Serving gui/ at {url}")
     print("  The console opens in your default browser. Leave this running while")
     print("  presenting; press Ctrl+C to stop. No server wanted? gui/standalone.html")
