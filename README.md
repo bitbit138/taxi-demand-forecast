@@ -54,7 +54,7 @@ form is the one documented and tested: it puts the project root on `sys.path`, w
 what makes `import config` and the cross-file imports resolve (`spark_stream.py` imports
 `build_filters` and `local_date_hour` from `clean_aggregate.py`, `make_maps.py` imports
 `Forecaster` from `predict_live.py`). The one exception is `spark_stream.py` when
-launched through `spark-submit`, which takes a file path — see step 11.
+launched through `spark-submit`, which takes a file path — see step 15.
 
 Prefer not to type it? **[`run.py`](run.py) is the cross-platform launcher** (Windows, macOS,
 Linux — standard library only, then runs every step with the project's `.venv`):
@@ -109,7 +109,7 @@ python -m src.ingest.download_tlc --yes    # --yes confirms >3 months (~600 MB)
 python -m src.ingest.fetch_weather         # idempotent; re-runs skip cached zones
 python -m src.ingest.build_events          # always covers the whole year
 python -m src.batch.clean_aggregate        # --force to write despite a funnel warning
-python -m src.batch.zone_policy            # prints the 40 excluded zones
+python -m src.batch.zone_policy            # prints the excluded zones (38 on the full year)
 python -m src.batch.geo_join               # first run downloads the Sedona jars
 python -m src.batch.features
 python -m src.batch.train_kmeans --k 4     # omit --k to be shown the elbow/silhouette
