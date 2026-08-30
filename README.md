@@ -1,7 +1,6 @@
 # Transportation Demand Forecast — NYC Taxi
 
-Course 10351 (ניתוח נתוני עתק / Big Data Analytics), Afeka.
-Team: Lee Rosenblit, Tom Bitran.
+Lee Rosenblit · Tom Bitran
 
 Forecast NYC yellow-taxi **demand per `zone × hour`** by fusing TLC trip records with weather
 (Open-Meteo) and event/holiday flags. **Kafka** replays historical parquet as a simulated live
@@ -245,6 +244,17 @@ a query is subscribed to can fault it. And start the consumer before the produce
 stream is seen filling live; `startingOffsets=earliest` means nothing is lost either way,
 but with an existing checkpoint the stream resumes from its stored offsets rather than
 the beginning.
+
+**Kafka record timestamps are append time, not event time.** Event time lives in the
+payload (`tpep_pickup_datetime`) and drives every window; the record timestamp only
+drives the broker's retention and segment rolling. An earlier producer stamped records
+with the 2024 event time, and Kafka's 7-day retention then deleted the replay while the
+consumer was still reading it (`OffsetOutOfRangeException`, "Some data may be lost",
+and a `--validate` mismatch) — nondeterministically, depending on where the broker's
+5-minute retention timer fell. The producer no longer sets `timestamp_ms`, and
+`docker-compose.yml` pins `log.message.timestamp.type=LogAppendTime` so no client can
+reintroduce it. If the broker was created before that line existed, `docker compose
+up -d` recreates it with the new setting.
 
 `spark-submit` takes the **file path** `src\stream\spark_stream.py`, not the module name.
 The equivalent module form works too and resolves the connector from `config.py`:

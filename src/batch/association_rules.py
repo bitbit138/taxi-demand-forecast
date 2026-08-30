@@ -1,7 +1,7 @@
 """Association rules over origin->destination flows with Spark MLlib FP-Growth.
 
-The course pairs clustering with **association rules**; this is the project's use
-of the second technique, applied where it means something for the demand problem:
+Clustering's natural companion is **association rules**; this is the project's use
+of that second technique, applied where it means something for the demand problem:
 a taxi that drops off is supply appearing where demand comes next, so
 high-confidence ``pickup-zone -> dropoff-zone`` rules are exactly the
 repositioning structure a dispatcher exploits between forecast windows.

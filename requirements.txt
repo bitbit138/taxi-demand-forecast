@@ -1,4 +1,4 @@
-# Course 10351 final project — pinned dependency set.
+# Pinned dependency set.
 # Version matrix (do not change one without the others):
 #   Python 3.11 · Java 17 (Temurin) · Spark 3.5.3 · Scala 2.12 · Sedona 1.9.0
 # Matching Spark jars are declared in config.py (SPARK_PACKAGES).

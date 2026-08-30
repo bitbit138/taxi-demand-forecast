@@ -43,6 +43,12 @@ services:
       KAFKA_NUM_PARTITIONS: 3
       # Replay writes a lot of small messages; a week of retention is plenty.
       KAFKA_LOG_RETENTION_HOURS: 168
+      # Retention and segment rolling are judged by RECORD timestamps. The replay
+      # carries 2024 event times in its payload; if a client ever stamps the record
+      # itself with that time, every segment is "years old" and gets deleted while
+      # the consumer is still reading (OffsetOutOfRangeException). Append time makes
+      # retention measure real elapsed time. Event time stays in the JSON payload.
+      KAFKA_LOG_MESSAGE_TIMESTAMP_TYPE: LogAppendTime
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:

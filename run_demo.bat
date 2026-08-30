@@ -90,7 +90,7 @@ set "VENV_PY=%CD%\.venv\Scripts\python.exe"
 set "SPARK_SUBMIT=%CD%\.venv\Scripts\spark-submit.cmd"
 
 REM spark-submit's .cmd wrapper expands %PYSPARK_DRIVER_PYTHON% unquoted, so a path
-REM with spaces ("Year 3") makes it print a harmless but alarming "The system cannot
+REM with spaces makes it print a harmless but alarming "The system cannot
 REM find the path specified." before Spark starts. Hand it the 8.3 short name instead:
 REM same interpreter, no spaces, no message. On a volume with 8.3 names disabled the
 REM expansion returns the long path and the (still harmless) message comes back.
@@ -101,7 +101,7 @@ set "PYSPARK_DRIVER_PYTHON=%VENV_PY_SHORT%"
 
 REM SPARK_HOME must be set too. PySpark's find-spark-home.cmd shells out to the
 REM Python executable without quoting the path, so a repo path containing spaces
-REM ("Year 3", "Semester B") makes it report "Missing Python executable" and then
+REM (e.g. "My Projects") makes it report "Missing Python executable" and then
 REM "Failed to find Spark jars directory". Pointing at the venv's pyspark package
 REM skips the discovery entirely.
 set "SPARK_HOME=%CD%\.venv\Lib\site-packages\pyspark"

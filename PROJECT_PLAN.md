@@ -1,5 +1,4 @@
 # Transportation Demand Forecast — Implementation Plan
-**Course 10351 (ניתוח נתוני עתק / Big Data Analytics), Afeka.** Project = 70% of grade, no final exam.
 Team: Lee Rosenblit, Tom Bitran.
 
 Forecast NYC taxi **demand per `zone × time-window`**, fusing TLC trips + weather + events (novelty #1),
@@ -75,7 +74,7 @@ taxi-demand-forecast/
 - [x] **`train_kmeans.py`** — `VectorAssembler` + `StandardScaler` + `KMeans`; sweep **K=2…12** for WCSS (elbow) and **silhouette**; pick K from those curves; save the model to `models/`. Compute per-cluster mean demand → the prediction rule.
 - [x] **`evaluate.py`** — build the **baseline ladder** (historical average, moving average, weighted MA, exponentially-weighted MA) plus the cluster-mean prediction, and score every method with **MAE, RMSE, MAPE** on the test split. Emit one comparison table (rows = methods, columns = metrics).
 
-## Phase 5 — Streaming: Kafka + Spark (`src/stream/`) — the graded core
+## Phase 5 — Streaming: Kafka + Spark (`src/stream/`) — the core
 
 - [x] **`producer.py`** — replay `data/raw` rows as JSON to `taxi-trips`, **time-accelerated**, event-time = `tpep_pickup_datetime`, with a defined message schema.
 - [x] **`spark_stream.py`** — Structured Streaming from Kafka (launch with the `--packages` connector): parse JSON, reapply cleaning filters, set a **watermark** on event-time, **tumbling-window** demand per zone, write to console + parquet sinks. **Load the saved batch model** and emit **predicted vs actual** per window — the live path reuses the batch artifact and never retrains.
@@ -91,14 +90,14 @@ taxi-demand-forecast/
 
 ## Phase 8 — Deliverables & submission
 
-- [x] **Presentation** — delivered in class; the final submission is code + results (REPORT.md, notebook, reports/) via the course site.
+- [x] **Presentation** — delivered; the final deliverable is code + results (REPORT.md, notebook, reports/).
 - [x] **Short report** referencing the three proposal papers (Sedona/GeoSpark, DMVST-Net, NYC-taxi VAST) — what you used from each.
 - [x] **`README.md`**: exact run order — `docker compose up` → download → weather → batch clean/geo/features → train → evaluate → producer → stream — with pinned versions.
 - [x] Reproducibility: fixed seeds, pinned `requirements.txt` and jar coordinates. Raw TLC parquet
   is not committed (re-fetched by URL); everything derived from it — `data/external/`,
   `data/processed/`, `models/`, `reports/` (~60 MB) — is, which is what makes every reported
   number checkable and every demo runnable from a clone.
-- [ ] Submit via **Moodle** on time.
+- [ ] Submit on time.
 
 ---
 

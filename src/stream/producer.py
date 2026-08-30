@@ -5,17 +5,18 @@ message per trip. **No cleaning, no aggregation** — ``spark_stream.py`` reappl
 cleaning filters and does the windowing, exactly as it would for a genuinely live feed.
 
 **Event time comes from the data, not the clock.** Every message carries
-``tpep_pickup_datetime`` (naive NY-local wall-clock, as stored in the TLC parquet), and
-the Kafka record timestamp is set to the same instant. Structured Streaming windows and
-watermarks are driven by that field, so a replay produces the same windows regardless of
-when it is run or how fast.
+``tpep_pickup_datetime`` (naive NY-local wall-clock, as stored in the TLC parquet).
+Structured Streaming windows and watermarks are driven by that payload field, so a
+replay produces the same windows regardless of when it is run or how fast.
 
-The record timestamp is the wall-clock value interpreted as UTC — i.e. NY-local
-"2024-01-01 00:00:04" becomes epoch 1704067204000, which reads back as the same
-wall-clock. That is the project-wide convention (``spark.sql.session.timeZone = UTC``
-over naive local timestamps, see ``src/spark_session.py``): nothing is ever shifted.
-``spark_stream.py`` parses event time from the payload field regardless, so the record
-timestamp is corroboration rather than the source of truth.
+The **Kafka record timestamp is deliberately left to the broker** (append time). An
+earlier version stamped each record with its 2024 event time; Kafka evaluates
+time-based retention and segment rolling against record timestamps, so a 7-day
+retention saw every segment as years old and deleted the replay from under the
+consumer within seconds (``OffsetOutOfRangeException`` / "Some data may be lost").
+``spark_stream.py`` never reads the record timestamp — event time is parsed from the
+payload — so nothing downstream changes; ``docker-compose.yml`` additionally pins
+``log.message.timestamp.type=LogAppendTime`` so no client can reintroduce the trap.
 
 **Acceleration.** ``config.REPLAY_SPEEDUP`` maps simulated time to real time and the
 mapping is logged on every run. 3600 means 1 real second == 1 simulated hour, so a
@@ -379,9 +380,9 @@ def main() -> int:
                 config.KAFKA_TOPIC,
                 key=message[config.KAFKA_MESSAGE_KEY_FIELD],
                 value=message,
-                # Record timestamp == event time, so the broker-side timestamp
-                # agrees with the payload rather than with the replay clock.
-                timestamp_ms=int(pd.Timestamp(event_time).timestamp() * 1000),
+                # No timestamp_ms: the broker stamps append time. Stamping the 2024
+                # event time here made time-based retention delete the segments
+                # mid-replay (see module docstring). Event time is in the payload.
             )
             sent += 1
 

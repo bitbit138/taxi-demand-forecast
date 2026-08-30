@@ -1,7 +1,6 @@
 # Transportation Demand Forecast — Final Report
 
-**Course 10351 — ניתוח נתוני עתק (Big Data Analytics), Afeka.**
-Tom Bitran (322373028) · Lee Rosenblit (322357880)
+Tom Bitran · Lee Rosenblit
 
 ---
 
@@ -134,7 +133,7 @@ City 45.1%, Two Bridges 43.6%, Central Harlem North 42.9%) — thinner, spikier 
 with the same citywide weather signal. This is the per-zone-signal limitation made
 visible, and the obvious next-work item.
 
-**Association rules — the course's second technique, applied to flows.**
+**Association rules — a second mining technique, applied to flows.**
 `src/batch/association_rules.py` runs Spark MLlib **FP-Growth** over all 39.2M cleaned
 trips (one transaction per trip: pickup item + dropoff item; minSupport 0.1%,
 minConfidence 5%) and keeps the directed `pickup → dropoff` rules. Sixty-five rules
