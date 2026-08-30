@@ -10,6 +10,11 @@ and modeling.
 
 ## Locked setup (all decisions already made)
 
+> Two of these evolved during implementation and are documented in [REPORT.md](REPORT.md):
+> the headline metric is **WAPE** (MAPE is undefined on the ~46% zero bins; MAPE on non-zero
+> cells is still reported), and the K-Means prediction rule is **cluster shape × the zone's
+> own level** rather than the raw pooled cluster mean (both are scored in the ladder).
+
 | Item | Decision |
 | --- | --- |
 | Compute environment | Local **Docker Compose** (Kafka in KRaft mode) + local **PySpark**. Self-contained, free, reproducible. |
@@ -89,9 +94,10 @@ taxi-demand-forecast/
 - [x] **Presentation** — delivered in class; the final submission is code + results (REPORT.md, notebook, reports/) via the course site.
 - [x] **Short report** referencing the three proposal papers (Sedona/GeoSpark, DMVST-Net, NYC-taxi VAST) — what you used from each.
 - [x] **`README.md`**: exact run order — `docker compose up` → download → weather → batch clean/geo/features → train → evaluate → producer → stream — with pinned versions.
-- [x] Reproducibility: fixed seeds, pinned `requirements.txt` and jar coordinates. No parquet
-  under `data/` is committed (raw is re-fetched by URL); the committed artifacts are `models/`
-  and `reports/`, which is what makes every reported number checkable from a clone.
+- [x] Reproducibility: fixed seeds, pinned `requirements.txt` and jar coordinates. Raw TLC parquet
+  is not committed (re-fetched by URL); everything derived from it — `data/external/`,
+  `data/processed/`, `models/`, `reports/` (~60 MB) — is, which is what makes every reported
+  number checkable and every demo runnable from a clone.
 - [ ] Submit via **Moodle** on time.
 
 ---

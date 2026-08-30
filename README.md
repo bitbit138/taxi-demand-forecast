@@ -112,7 +112,7 @@ python -m src.batch.clean_aggregate        # --force to write despite a funnel w
 python -m src.batch.zone_policy            # prints the excluded zones (38 on the full year)
 python -m src.batch.geo_join               # first run downloads the Sedona jars
 python -m src.batch.features
-python -m src.batch.train_kmeans --k 4     # omit --k to be shown the elbow/silhouette
+python -m src.batch.train_kmeans --k 5     # the committed K; omit --k to be shown the elbow/silhouette
 python -m src.batch.evaluate
 python -m src.batch.ablation               # open question #2 + the conditions model
 python -m src.viz.make_maps
@@ -174,7 +174,7 @@ Or use the launcher, which does the same in two invocations:
 
 ```powershell
 .\run_pipeline_full_year.bat        # phase 1, stops for review
-.\run_pipeline_full_year.bat k 4    # phase 2, once you have chosen
+.\run_pipeline_full_year.bat k 5    # phase 2, once you have chosen (5 = the committed model)
 ```
 
 `kmeans_metadata.json` records the chosen K, both criterion suggestions, both sweep
@@ -190,12 +190,9 @@ local 02:00 on 2024-03-10 does not exist).
 ### Local web console (presentation GUI)
 
 ```powershell
-.
-un_gui.bat            # export the payload, serve gui\ at http://localhost:8765
-.
-un_gui.bat serve      # skip the export, serve what is committed
-.
-un_gui.bat build      # export only
+.\run_gui.bat            # export the payload, serve gui\ at http://localhost:8765
+.\run_gui.bat serve      # skip the export, serve what is committed
+.\run_gui.bat build      # export only
 ```
 
 A **static local web app** that serves the trained model in the browser: pick a zone
@@ -288,7 +285,7 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-
 | 6a | `python -m src.batch.zone_policy` | `data/processed/modeling_zones.parquet` |
 | 6b | `python -m src.batch.geo_join` | `data/processed/zone_centroids.parquet` |
 | 7 | `python -m src.batch.features` | `data/processed/features.parquet` |
-| 8 | `python -m src.batch.train_kmeans --k 4` | `models/kmeans/`, `reports/k_sweep.csv` |
+| 8 | `python -m src.batch.train_kmeans --k 5` | `models/kmeans/`, `reports/k_sweep.csv` |
 | 9 | `python -m src.batch.evaluate` | `reports/baseline_metrics.csv` |
 | 10 | `python -m src.batch.ablation` | `reports/ablation_metrics.csv`, `models/conditions_model.json`, `models/hist_avg.parquet` |
 | 11 | `python -m src.batch.significance` | `reports/significance.csv` — bootstrap CIs for the ablation delta |
@@ -543,11 +540,12 @@ three things that break PySpark on Windows:
 Fixed seed (`config.SEED = 42`) for KMeans and the time-based train/test split, pinned
 `requirements.txt`, pinned Spark jar coordinates.
 
-**What is and is not committed.** No parquet under `data/` is committed — neither the
-raw TLC files nor the derived tables; `data/` is rebuilt from scratch by the ingest and
-batch steps above (`download_tlc` re-fetches the raw months, so the input is pinned by
-URL rather than by a checked-in copy). What *is* committed is the result set: `models/`
-(the saved K-Means pipeline, cluster profiles, `kmeans_metadata.json` and the conditions
-model) and `reports/` (figures, metrics tables, GeoJSON). Every number in
-[REPORT.md](REPORT.md) can therefore be checked against a committed artifact without
-re-running the pipeline, and `predict_live.py` answers queries from a fresh clone.
+**What is and is not committed.** The raw TLC parquet (~600 MB/year) is not — `download_tlc`
+re-fetches it, so the input is pinned by URL rather than by a checked-in copy. Everything
+derived from it *is*: `data/external/` (weather, events, zone shapefile), `data/processed/`
+(demand, features, zone policy, centroids, a streamed sample), `models/` (the saved K-Means
+pipeline, cluster profiles, `kmeans_metadata.json` and the conditions model) and `reports/`
+(figures, metrics tables, GeoJSON) — about 60 MB in total. Every number in
+[REPORT.md](REPORT.md) can therefore be checked against a committed artifact, and
+`predict_live.py`, `make_maps.py`, `significance.py`, `evaluate.py`, the GUI build and the
+notebook all run from a fresh clone without the download or a Spark pipeline run.

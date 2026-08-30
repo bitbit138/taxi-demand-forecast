@@ -1,13 +1,14 @@
-# --- Data: never commit raw or derived parquet (GBs) ------------------------
+# --- Data ---------------------------------------------------------------------
+# Raw TLC parquet (~600 MB/year) is never committed: download_tlc.py re-fetches it
+# by URL. Everything derived from it IS committed on purpose — external inputs
+# (weather, events, zone shapefile) and the processed tables (demand, features,
+# zone policy, centroids, a streamed sample) total ~30 MB and are what lets every
+# reported number be re-checked, and every demo run, straight from a clone
+# without Spark or the download. Streaming checkpoints are runtime state.
 data/raw/*
 !data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-data/external/*
-!data/external/.gitkeep
-# ...but a tiny committed sample is allowed for reproducibility
-!data/**/sample_*.csv
-!data/**/sample_*.parquet
+data/external/taxi_zones.zip
+**/_checkpoints/
 
 # --- Models & reports -------------------------------------------------------
 # Committed on purpose: the saved models and report artifacts ARE the submitted

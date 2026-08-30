@@ -198,6 +198,15 @@ automatically from the calendar. Querying Midtown Center for Thanksgiving 15:00
 returns a 414-trip historical base with a **−134.7 event adjustment** — no flag
 supplied. Both proposal novelties are therefore delivered and demonstrable live.
 
+The same two models also run in a **local browser console** (`gui/`, built by
+`src/viz/build_gui.py`): the fitted coefficients, the `(zone, hour, dow)` history
+table, the cluster shapes and the calendar are exported to one JSON payload and
+re-applied in JavaScript, so a zone, an hour and the rain/temperature sliders move
+the forecast and a 225-zone choropleth live with no Spark, Kafka or network. The
+export is verified against `predict_live.py` over 400 random queries before it is
+written (max difference 5.4e-07), so the console shows the pipeline's numbers,
+not a re-derivation of them.
+
 ## 8. Answers to the proposal's open questions
 
 1. **How many clusters best capture demand?** K=5 on the full year (elbow), after
@@ -239,5 +248,6 @@ Pinned versions (Python 3.11 · Java 17 · Spark 3.5.3 · Scala 2.12 · Sedona 1
 Kafka 3.9), fixed seed 42 for K-Means and GBT, deterministic time-based split,
 `kmeans_metadata.json` records K, both criterion curves, seed and the fitted data
 range. One command reproduces everything: `run_pipeline_full_year.bat` (sweep,
-review, commit-to-K), then `run_demo.bat` for the streaming demo. The full
+review, commit-to-K), then `run_demo.bat` for the streaming demo and `run_gui.bat`
+for the browser console; `run.py` is the same launcher for macOS/Linux. The full
 walkthrough with outputs is in `notebooks/results_walkthrough.ipynb`.

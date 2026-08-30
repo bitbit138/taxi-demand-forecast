@@ -116,7 +116,7 @@ echo ===========================================================================
 echo   Read the cluster characters printed above and the curves in
 echo   reports\k_sweep.csv, then commit to a K:
 echo.
-echo       run_pipeline_full_year.bat k 4      (if 4 still holds)
+echo       run_pipeline_full_year.bat k 5      (if 5 still holds)
 echo       run_pipeline_full_year.bat k ^<N^>     (if the full year splits differently)
 echo.
 echo   That finishes the run: train + save, evaluate, and render the figures.
