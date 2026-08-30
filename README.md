@@ -56,8 +56,23 @@ what makes `import config` and the cross-file imports resolve (`spark_stream.py`
 `Forecaster` from `predict_live.py`). The one exception is `spark_stream.py` when
 launched through `spark-submit`, which takes a file path — see step 11.
 
-Prefer not to type it? [`run_pipeline_full_year.bat`](run_pipeline_full_year.bat) and
-[`run_demo.bat`](run_demo.bat) do all of it.
+Prefer not to type it? **[`run.py`](run.py) is the cross-platform launcher** (Windows, macOS,
+Linux — standard library only, then runs every step with the project's `.venv`):
+
+```bash
+python run.py pipeline            # steps 1-7, then sweep K and stop for review
+python run.py pipeline k 5        # commit to K=5: train, evaluate, ablation, maps, stats
+python run.py pipeline smoke      # 3-month sample, K pinned to 4 — a sequencing check
+python run.py demo                # Kafka + Spark Structured Streaming, two windows
+python run.py gui                 # rebuild gui/payload.json, then serve on :8765
+python run.py <command> --dry-run # print every command instead of running it
+```
+
+It mirrors the Windows-native launchers step for step — [`run_pipeline_full_year.bat`](run_pipeline_full_year.bat),
+[`run_demo.bat`](run_demo.bat) and [`run_gui.bat`](run_gui.bat) remain as the tested
+`.bat` equivalents. On macOS/Linux set `JAVA_HOME` first (e.g.
+`export JAVA_HOME=$(/usr/libexec/java_home -v 17)`); `VENV_PY=<path>` or `--python`
+points the launcher at a venv that is not `./.venv`.
 
 ### One-time setup
 
@@ -175,9 +190,12 @@ local 02:00 on 2024-03-10 does not exist).
 ### Local web console (presentation GUI)
 
 ```powershell
-.un_gui.bat            # export the payload, serve gui\ at http://localhost:8765
-.un_gui.bat serve      # skip the export, serve what is committed
-.un_gui.bat build      # export only
+.
+un_gui.bat            # export the payload, serve gui\ at http://localhost:8765
+.
+un_gui.bat serve      # skip the export, serve what is committed
+.
+un_gui.bat build      # export only
 ```
 
 A **static local web app** that serves the trained model in the browser: pick a zone
