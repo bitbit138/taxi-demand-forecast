@@ -53,6 +53,12 @@ HIST_AVG_PARQUET = MODELS_DIR / "hist_avg.parquet"               # (zone,hour,do
 
 STREAM_OUTPUT_DIR = PROCESSED_DIR / "stream_predictions"
 STREAM_CHECKPOINT_DIR = PROCESSED_DIR / "_checkpoints"
+# Cumulative snapshot the streaming consumer rewrites after every micro-batch so
+# gui/stream.html can show the replay live. Runtime state, not committed.
+STREAM_STATE_JSON = ROOT / "gui" / "stream_state.json"
+# Checkpoint of the second, update-mode query that feeds the page's filling-window
+# view. Separate from the validated query's checkpoint; runtime state.
+STREAM_LIVE_CHECKPOINT_DIR = PROCESSED_DIR / "_checkpoints_live"
 
 for _d in (RAW_DIR, EXTERNAL_DIR, PROCESSED_DIR, MODELS_DIR, REPORTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)

@@ -206,6 +206,21 @@ export is verified against `predict_live.py` over 400 random queries before it i
 written (max difference 5.4e-07), so the console shows the pipeline's numbers,
 not a re-derivation of them.
 
+The streaming demo has a live view of its own (`gui/stream.html`). The replay runs a
+whole simulated day at 60× — one real minute per hour, ~33 minutes in all — and the
+page shows what the terminal cannot: the current hour *filling in* on the city map
+(a second, update-mode query on the same topic, with its own checkpoint, that feeds
+only the page), the event-time watermark advancing behind it, each hour snapping to
+its final count when the watermark closes it, and the frozen model's forecast beside
+every actual — per zone on hover or click, and city-wide as an actual-vs-predicted
+curve that draws itself through the morning and evening rushes. The consumer's
+`foreachBatch` sink, after appending each micro-batch to Parquet, rewrites one JSON
+snapshot that the page polls every two seconds over the same local `http.server`
+that serves the model console; the `--validate` verdict is added when the consumer
+stops. The validated query — its windows, watermark, Parquet sink and comparison —
+is untouched, so the page shows exactly what the terminal prints, and the final
+bit-for-bit agreement with the batch aggregate is displayed rather than asserted.
+
 ## 8. Answers to the proposal's open questions
 
 1. **How many clusters best capture demand?** K=5 on the full year (elbow), after

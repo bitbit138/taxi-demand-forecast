@@ -43,7 +43,10 @@ Equivalent spark-submit form::
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
+import threading
 import time
 from functools import reduce
 from pathlib import Path
@@ -181,8 +184,195 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def make_sink(console_rows: int):
-    """foreachBatch sink: append to parquet and print a sample of each batch."""
+class StreamState:
+    """Cumulative snapshot of the run for the live page (``gui/stream.html``).
+
+    Observation only: the validated query, its windows, the watermark and the
+    parquet sink are untouched. Three writers feed it — the append-mode sink
+    (final cells, after the parquet write), the update-mode live sink (the still
+    open windows filling up) and the main loop (query progress: watermark, input
+    rows, rate) — so every method takes one lock. Each write rewrites the whole
+    document atomically (temp file + ``os.replace``), so a browser polling it over
+    ``http.server`` never sees a half-written file. ``--validate``'s verdict is
+    added at the end so the page can show it.
+    """
+
+    MAX_SAMPLES = 900   # progress samples kept for the rate sparkline (~30 min at 2 s)
+
+    def __init__(self, path: Path, run_seconds: int) -> None:
+        self.path = Path(path)
+        self.run_seconds = run_seconds
+        self.started_at = time.time()
+        self.lock = threading.Lock()
+        self.closed: dict[str, dict] = {}   # window_start -> final cells + totals
+        self.open: dict[str, dict] = {}     # window_start -> provisional cells
+        self.batches: list[dict] = []       # log of append-mode batches
+        self.progress = {"batch_id": None, "watermark": None, "input_rows": 0,
+                         "rate": 0.0, "batch_ms": None, "samples": []}
+
+    @staticmethod
+    def _stamp(value) -> str:
+        return value.strftime("%Y-%m-%d %H:%M") if hasattr(value, "strftime") else str(value)
+
+    @staticmethod
+    def _num(value):
+        return None if value is None else round(float(value), 2)
+
+    def record_closed(self, batch_id: int, rows) -> None:
+        """Final cells from the append-mode sink (one entry per (window, zone))."""
+        with self.lock:
+            touched: dict[str, dict] = {}
+            for r in rows:
+                start = self._stamp(r["window_start"])
+                w = self.closed.setdefault(start, {
+                    "start": start, "end": self._stamp(r["window_end"]),
+                    "date": r["date_local"], "hour": int(r["hour_local"]),
+                    "batch": batch_id, "cells": {},
+                })
+                w["cells"][str(int(r["zone_id"]))] = [
+                    int(r["actual_demand"]), self._num(r["predicted_demand"]),
+                ]
+                touched[start] = w
+            for w in touched.values():
+                self._total(w)
+            if touched:
+                self.batches.append({
+                    "id": batch_id, "t": round(time.time(), 1),
+                    "cells": len(rows),
+                    "windows": sorted(touched),
+                    "actual": sum(int(r["actual_demand"]) for r in rows),
+                    "predicted": round(sum(float(r["predicted_demand"] or 0) for r in rows), 2),
+                    "mae": round(sum(abs(float(r["error"] or 0)) for r in rows) / len(rows), 4),
+                })
+
+    def record_open(self, rows) -> None:
+        """Provisional counts from the update-mode live query; overwrite per cell."""
+        with self.lock:
+            touched: dict[str, dict] = {}
+            for r in rows:
+                start = self._stamp(r["window_start"])
+                w = self.open.setdefault(start, {
+                    "start": start, "end": self._stamp(r["window_end"]), "cells": {},
+                })
+                w["cells"][str(int(r["zone_id"]))] = [
+                    int(r["actual_demand"]), self._num(r["predicted_demand"]),
+                ]
+                w["updated"] = round(time.time(), 1)
+                touched[start] = w
+            for w in touched.values():
+                self._total(w)
+
+    def record_progress(self, progress: dict | None) -> bool:
+        """Query progress from the main loop; returns True when a new batch was seen."""
+        if not progress or progress.get("batchId") == self.progress["batch_id"]:
+            return False
+        with self.lock:
+            pr = self.progress
+            pr["batch_id"] = progress.get("batchId")
+            pr["input_rows"] += int(progress.get("numInputRows", 0) or 0)
+            pr["rate"] = round(float(progress.get("processedRowsPerSecond", 0) or 0), 1)
+            pr["batch_ms"] = progress.get("batchDuration")
+            wm = (progress.get("eventTime") or {}).get("watermark")
+            if wm and wm.startswith("1970"):
+                wm = None   # not advanced yet
+            if wm:
+                pr["watermark"] = wm[:16].replace("T", " ")
+            pr["samples"].append([round(time.time(), 1), pr["input_rows"], pr["rate"],
+                                  pr["watermark"]])
+            del pr["samples"][:-self.MAX_SAMPLES]
+        return True
+
+    @staticmethod
+    def _total(w: dict) -> None:
+        cells = w["cells"]
+        w["n"] = len(cells)
+        w["actual"] = sum(a for a, _ in cells.values())
+        w["predicted"] = round(sum(p or 0.0 for _, p in cells.values()), 2)
+        abs_error = sum(abs((p or 0.0) - a) for a, p in cells.values())
+        w["abs_error"] = round(abs_error, 2)
+        w["mae"] = round(abs_error / len(cells), 4) if cells else None
+
+    def write(self, status: str, verdict: dict | None = None) -> None:
+        with self.lock:
+            closed = sorted(self.closed.values(), key=lambda w: w["start"])
+            # A window the append query has closed is final; drop its provisional copy.
+            open_ = sorted(
+                (w for k, w in self.open.items() if k not in self.closed),
+                key=lambda w: w["start"],
+            )
+            n_cells = sum(w["n"] for w in closed)
+            actual = sum(w["actual"] for w in closed)
+            abs_error = sum(w["abs_error"] for w in closed)
+            doc = {
+                "status": status,
+                "started_at": self.started_at,
+                "updated_at": time.time(),
+                "run_seconds": self.run_seconds,
+                "window": config.WINDOW_DURATION,
+                "watermark": config.WATERMARK_DELAY,
+                "topic": config.KAFKA_TOPIC,
+                "progress": self.progress,
+                "batches": self.batches,
+                "closed": closed,
+                "open": open_,
+                "totals": {
+                    "cells": n_cells,
+                    "windows_closed": len(closed),
+                    "windows_open": len(open_),
+                    "actual": actual,
+                    "predicted": round(sum(w["predicted"] for w in closed), 2),
+                    "abs_error": round(abs_error, 2),
+                    "mae": round(abs_error / n_cells, 4) if n_cells else None,
+                    "wape": round(abs_error / actual, 6) if actual else None,
+                    "latest_start": closed[-1]["start"] if closed else None,
+                    "latest_end": closed[-1]["end"] if closed else None,
+                },
+                "verdict": verdict,
+            }
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+
+def stamped(df: DataFrame) -> DataFrame:
+    """Window bounds as strings, formatted by Spark under the session timezone.
+
+    ``collect()`` would hand back ``TimestampType`` as Python datetimes shifted
+    into the driver machine's local timezone — two hours off in NY-local event
+    time on a UTC+2 machine — so the snapshot never takes a raw timestamp.
+    """
+    return df.withColumn(
+        "window_start", F.date_format("window_start", "yyyy-MM-dd HH:mm")
+    ).withColumn("window_end", F.date_format("window_end", "yyyy-MM-dd HH:mm"))
+
+
+def make_live_sink(state: StreamState):
+    """foreachBatch sink of the update-mode *live* query: provisional counts only.
+
+    Structured Streaming emits, in update mode, every (window, zone) whose count
+    changed in the micro-batch — including windows the watermark has not closed
+    yet. Nothing here is persisted or validated; it exists so the page can show
+    the current hour filling up between the append query's final emissions.
+    """
+
+    def live_batch(batch: DataFrame, batch_id: int) -> None:
+        if batch.rdd.isEmpty():
+            return
+        state.record_open(
+            stamped(batch).select("zone_id", "window_start", "window_end",
+                                  "actual_demand", "predicted_demand").collect()
+        )
+        state.write("running")
+
+    return live_batch
+
+def make_sink(console_rows: int, state: StreamState | None = None):
+    """foreachBatch sink: append to parquet and print a sample of each batch.
+
+    ``state``, when given, is also refreshed after the parquet write — after, so
+    the live page never shows a cell the sink has not persisted.
+    """
 
     def write_batch(batch: DataFrame, batch_id: int) -> None:
         if batch.rdd.isEmpty():
@@ -205,19 +395,29 @@ def make_sink(console_rows: int):
         batch.orderBy(F.desc("actual_demand")).limit(console_rows).show(truncate=False)
 
         batch.write.mode("append").parquet(str(config.STREAM_OUTPUT_DIR))
+        if state is not None:
+            state.record_closed(batch_id, stamped(batch).collect())
+            state.write("running")
         batch.unpersist()
 
     return write_batch
 
 
+# Filled in by validate() so the live page can show the verdict; the printed
+# report is unchanged.
+VALIDATION: dict = {}
+
+
 def validate(spark: SparkSession) -> bool:
     """Streamed per-window demand must equal demand.parquet for the same cells."""
+    VALIDATION.clear()
     print("\n" + "=" * 92)
     print("VALIDATION — streamed windows vs batch demand.parquet")
     print("=" * 92)
 
     if not Path(config.STREAM_OUTPUT_DIR).exists():
         print("  no streamed output written — nothing to compare")
+        VALIDATION.update(ok=False, reason="no streamed output written")
         return False
 
     streamed = (
@@ -248,6 +448,7 @@ def validate(spark: SparkSession) -> bool:
     if not windows:
         print("  none — the watermark never advanced past a window boundary.")
         print("  Replay a longer slice: with a 2h watermark the last ~2h never close.")
+        VALIDATION.update(ok=False, reason="no window closed")
         return False
     print(f"  window hours            : {', '.join(windows[:8])}"
           f"{' ...' if len(windows) > 8 else ''}")
@@ -273,6 +474,10 @@ def validate(spark: SparkSession) -> bool:
     print(f"  streamed total trips                : {int(sums['s']):,}")
     print(f"  batch total trips                   : {int(sums['b']):,}")
     print(f"  cells disagreeing                   : {n_bad:,}")
+    VALIDATION.update(
+        ok=n_bad == 0, windows=len(windows), cells=int(total),
+        streamed=int(sums["s"]), batch=int(sums["b"]), mismatched=int(n_bad),
+    )
 
     if n_bad:
         print("\n  MISMATCH — first 20 disagreeing cells:")
@@ -360,6 +565,16 @@ def parse_args() -> argparse.Namespace:
         help="after stopping, compare streamed windows against demand.parquet",
     )
     parser.add_argument(
+        "--state-file", default=str(config.STREAM_STATE_JSON),
+        help="JSON snapshot rewritten after every batch for gui/stream.html "
+             "(default %(default)s; pass '' to disable)",
+    )
+    parser.add_argument(
+        "--no-live", action="store_true",
+        help="do not start the second, update-mode query that feeds the page's "
+             "filling-window view (the validated append query is unaffected either way)",
+    )
+    parser.add_argument(
         "--ready-file",
         help="write this file once the query is running, so a launcher can wait for "
              "the consumer before starting the producer",
@@ -382,10 +597,14 @@ def main() -> int:
     if args.fresh:
         import shutil  # noqa: PLC0415
 
-        for path in (config.STREAM_OUTPUT_DIR, config.STREAM_CHECKPOINT_DIR):
+        for path in (config.STREAM_OUTPUT_DIR, config.STREAM_CHECKPOINT_DIR,
+                     config.STREAM_LIVE_CHECKPOINT_DIR):
             if Path(path).exists():
                 shutil.rmtree(path)
                 print(f"cleared {path}")
+        if args.state_file and Path(args.state_file).exists():
+            Path(args.state_file).unlink()
+            print(f"cleared {args.state_file}")
 
     spark = get_spark("spark-stream", packages=config.SPARK_PACKAGES_KAFKA_ONLY)
 
@@ -430,9 +649,11 @@ def main() -> int:
     windows = windowed_demand(trips, zones)
     predicted = add_prediction(windows, shape)
 
+    state = StreamState(args.state_file, args.run_seconds) if args.state_file else None
+
     query = (
         predicted.writeStream.outputMode(args.console_mode)
-        .foreachBatch(make_sink(args.console_rows))
+        .foreachBatch(make_sink(args.console_rows, state))
         .option("checkpointLocation", str(config.STREAM_CHECKPOINT_DIR))
         .trigger(processingTime=f"{args.trigger_seconds} seconds")
         .start()
@@ -440,6 +661,22 @@ def main() -> int:
 
     print(f"\nquery started (id {query.id}); "
           f"{'running ' + str(args.run_seconds) + 's' if args.run_seconds else 'Ctrl-C to stop'}")
+
+    live_query = None
+    if state is not None:
+        if not args.no_live:
+            # Second query on the same source, update mode, own checkpoint: it only
+            # feeds the page. The validated query above neither knows nor cares.
+            live_query = (
+                predicted.writeStream.outputMode("update")
+                .foreachBatch(make_live_sink(state))
+                .option("checkpointLocation", str(config.STREAM_LIVE_CHECKPOINT_DIR))
+                .trigger(processingTime=f"{args.trigger_seconds} seconds")
+                .start()
+            )
+            print(f"live view query (id {live_query.id}) — update mode, page only")
+        state.write("running")
+        print(f"live page state  -> {state.path}")
 
     if args.ready_file:
         ready = Path(args.ready_file)
@@ -452,11 +689,20 @@ def main() -> int:
             deadline = time.monotonic() + args.run_seconds
             while time.monotonic() < deadline and query.isActive:
                 query.awaitTermination(timeout=2)
+                if state is not None:
+                    state.record_progress(query.lastProgress)
+                    state.write("running")
         else:
-            query.awaitTermination()
+            while query.isActive:
+                query.awaitTermination(timeout=2)
+                if state is not None:
+                    state.record_progress(query.lastProgress)
+                    state.write("running")
     except KeyboardInterrupt:
         print("\ninterrupted")
     finally:
+        if live_query is not None and live_query.isActive:
+            live_query.stop()
         if query.isActive:
             query.stop()
         progress = query.lastProgress
@@ -466,9 +712,13 @@ def main() -> int:
 
     ok = True
     if args.validate:
+        if state is not None:
+            state.write("validating")
         ok = validate(spark)
         if ok:
             show_predictions(spark)
+    if state is not None:
+        state.write("finished", dict(VALIDATION) if args.validate else None)
 
     print("\n" + "=" * 92)
     print("DONE")

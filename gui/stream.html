@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Demand Stream</title>
+<meta name="description" content="Live view of the Kafka to Spark Structured Streaming replay: the current hour filling in, closed windows scored against the frozen model, and the batch validation verdict.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23f5b921'/><rect x='6' y='13' width='20' height='9' fill='%23101416'/><rect x='10' y='8' width='12' height='6' fill='%23101416'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="stream.css">
+</head>
+<body>
+
+<header class="top">
+  <h1>NYC Demand Stream</h1>
+  <span class="label">Kafka &rarr; Spark Structured Streaming, as it happens</span>
+  <div class="meta">
+    <span id="metaZones">225 zones</span>
+    <span id="metaWindow">1-hour windows &middot; 2-hour watermark</span>
+    <a id="consoleLink" href="index.html">Model console &rarr;</a>
+  </div>
+  <button class="themebtn" id="theme" type="button" title="Switch light / dark">Dark</button>
+</header>
+
+<div class="loadfail" id="loadfail" hidden>
+  <b>The zone payload could not be loaded.</b>
+  <p>This page reads <code>payload.json</code> for the zone shapes and names, and
+  <code>stream_state.json</code> for the live stream. Both need to be served over
+  http, not opened from disk:</p>
+  <ol>
+    <li><code>python run.py demo</code> (or <code>run_demo.bat</code>) serves
+    <code>gui/</code> on <code>http://127.0.0.1:8765/stream.html</code> and opens it.</li>
+    <li>By hand: <code>python -m http.server 8765 --bind 127.0.0.1 --directory gui</code></li>
+  </ol>
+  <p>No <code>payload.json</code> yet? Build it: <code>python -m src.viz.build_gui</code></p>
+</div>
+
+<div class="stream" id="stream" hidden>
+
+  <!-- Status strip -->
+  <div class="status" id="status" data-state="waiting">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="statusText">Waiting for the consumer&hellip;</span>
+    <span class="age label" id="statusElapsed" title="real time since the consumer started"></span>
+    <span class="age label" id="statusAge"></span>
+  </div>
+
+  <!-- Headline tiles -->
+  <div class="tiles">
+    <div class="tile clock">
+      <span class="label">Event time &middot; watermark</span>
+      <span class="big" id="tClock">&mdash;</span>
+      <span class="sub" id="tClockSub">nothing ingested yet</span>
+    </div>
+    <div class="tile">
+      <span class="label">Replay speed</span>
+      <span class="big" id="tSpeed">&mdash;</span>
+      <span class="sub" id="tSpeedSub">simulated minutes per real minute</span>
+    </div>
+    <div class="tile">
+      <span class="label">Trips ingested</span>
+      <span class="big" id="tIngest">0</span>
+      <span class="sub" id="tIngestSub">trips from Kafka, after cleaning</span>
+      <svg class="spark" id="spark" viewBox="0 0 120 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+    <div class="tile">
+      <span class="label">Windows (1 h each)</span>
+      <span class="big" id="tWindows">0</span>
+      <span class="sub" id="tWindowsSub">closed &middot; none open</span>
+    </div>
+    <div class="tile">
+      <span class="label">Cells scored</span>
+      <span class="big" id="tCells">0</span>
+      <span class="sub" id="tCellsSub">final (zone, window) pairs</span>
+    </div>
+    <div class="tile">
+      <span class="label">Running MAE</span>
+      <span class="big" id="tMae">&mdash;</span>
+      <span class="sub">trips per cell, closed windows</span>
+    </div>
+    <div class="tile">
+      <span class="label">Running WAPE</span>
+      <span class="big" id="tWape">&mdash;</span>
+      <span class="sub" id="tWapeSub">&Sigma;|error| &divide; &Sigma;actual trips, in %</span>
+    </div>
+    <div class="tile note">
+      <span class="label">Watermark</span>
+      <span class="mid" id="tWatermark">2 hours</span>
+      <span class="sub">An hour is scored only once event time has moved this far past
+        its end, so late trips still count — and the last ~2 simulated hours of the
+        replay never close.</span>
+    </div>
+  </div>
+
+  <div class="cols">
+    <!-- Map -->
+    <section class="panel">
+      <header>
+        <span class="label" id="mapTitle">Filling now &middot; pickups so far</span>
+        <span class="pill soft" id="mapProv" hidden>provisional</span>
+        <span class="modebtns" role="group" aria-label="Map window">
+          <button type="button" id="modeFill" aria-pressed="true">Filling now</button>
+          <button type="button" id="modeClosed" aria-pressed="false">Latest closed</button>
+        </span>
+      </header>
+      <div class="body">
+        <div class="mapwrap">
+          <div>
+            <svg class="map" id="map" role="img" aria-labelledby="mapDesc"></svg>
+            <p id="mapDesc" class="note" style="margin:.625rem 0 0;" data-when=""></p>
+          </div>
+          <div class="legend" id="legend">
+            <span class="label">Trips / hour</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Side: verdict, zone, batch log -->
+    <div class="side">
+      <section class="panel verdict" id="verdict" data-state="pending">
+        <header><span class="label">Validation &middot; stream vs batch</span></header>
+        <div class="body">
+          <div class="vhead">
+            <span class="pill" id="vPill">pending</span>
+            <span id="vTitle">The consumer compares every streamed cell with
+              <code>demand.parquet</code> after it stops.</span>
+          </div>
+          <dl class="vfacts" id="vFacts" hidden>
+            <dt>Streamed trips</dt><dd id="vStreamed">&mdash;</dd>
+            <dt>Batch trips</dt><dd id="vBatch">&mdash;</dd>
+            <dt>Cells compared</dt><dd id="vCells">&mdash;</dd>
+            <dt>Cells disagreeing</dt><dd id="vBad">&mdash;</dd>
+          </dl>
+          <p class="note" id="vNote"></p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header>
+          <span class="label">Zone</span>
+          <span class="label" id="zoneWhere"></span>
+        </header>
+        <div class="body zone" id="zone">
+          <p class="note" style="margin:0;">Click a zone on the map to follow it through
+            the day: what the stream counted each hour against what the frozen model
+            predicted for it.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header><span class="label">Micro-batches that closed a window</span></header>
+        <div class="body">
+          <ol class="batches" id="batches"><li class="empty">none yet</li></ol>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Day curve -->
+  <section class="panel">
+    <header>
+      <span class="label">City total per hour &middot; actual vs predicted</span>
+      <span class="chartkey">
+        <i class="k a"></i>actual (closed)
+        <i class="k o"></i>actual (filling, provisional)
+        <i class="k p"></i>predicted
+      </span>
+    </header>
+    <div class="body">
+      <svg class="chart" id="chart" viewBox="0 0 900 240" role="img" aria-label="City-wide trips per hour, actual against predicted"></svg>
+      <p class="note" style="margin:.625rem 0 0;">Every closed window's city-wide pickups
+        beside the sum of the stream's per-zone forecasts for that hour. The hollow marks
+        are hours still filling — they rise until the watermark closes them and the mark
+        fills in. The forecast never changes: it is the batch model, loaded once.</p>
+    </div>
+  </section>
+
+  <!-- Feed -->
+  <section class="panel">
+    <header>
+      <span class="label">Closed cells, newest window first</span>
+      <span class="label" id="feedCount"></span>
+    </header>
+    <div class="scroller feed">
+      <table id="feed">
+        <thead><tr><th>Window (hour)</th><th>Zone</th><th>Borough</th><th class="r">Cluster</th>
+          <th class="r">Actual (trips)</th><th class="r">Predicted (trips)</th><th class="r">Error (trips)</th>
+          <th class="r">Batch #</th></tr></thead>
+        <tbody><tr><td colspan="8" class="empty">Nothing has closed yet.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<footer class="foot">
+  <span>Source: <code>src/stream/spark_stream.py</code> &mdash; <code>gui/stream_state.json</code> rewritten every few seconds</span>
+  <span>Forecast: cluster share &times; zone level, loaded from <code>models/</code>, never retrained</span>
+  <span>Launch: <code>python run.py demo</code></span>
+</footer>
+
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+
+<script src="stream.js"></script>
+</body>
+</html>

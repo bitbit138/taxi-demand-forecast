@@ -11,18 +11,24 @@ cd /d "%~dp0"
 set "KAFKA_PKG=org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3"
 set "READY=.stream_ready"
 set "READY_TIMEOUT=180"
-REM Demo pacing: 600 => 1 real second = 10 simulated minutes. Above ~800 the
-REM producer becomes throughput-bound and stops pacing (see config.REPLAY_SPEEDUP).
-set "SPEEDUP=600"
-set "DEMO_START=2024-01-10 14:00:00"
-set "DEMO_HOURS=6"
-set "STREAM_SECONDS=420"
+REM Demo pacing: 60 => 1 real second = 1 simulated minute, so a window closes about
+REM once a minute and a 32-hour replay (a whole day plus the 2 h the watermark holds
+REM back) runs ~32 minutes - long enough to present over. Above ~800x the producer
+REM becomes throughput-bound and stops pacing (see config.REPLAY_SPEEDUP).
+set "SPEEDUP=60"
+set "DEMO_START=2024-01-10 06:00:00"
+set "DEMO_HOURS=32"
+set "STREAM_SECONDS=1980"
+REM Live page: gui\stream.html polls gui\stream_state.json, which the consumer
+REM rewrites after every micro-batch. Same port as run_gui.bat.
+set "PORT=8765"
+set "STATE=gui\stream_state.json"
 
 echo ============================================================================
 echo  Kafka + Spark streaming demo
 echo ============================================================================
 echo   replay      %DEMO_START%  for %DEMO_HOURS% simulated hours
-echo   speedup     %SPEEDUP%x  (1 real second = 10 simulated minutes)
+echo   speedup     %SPEEDUP%x  (1 real second = 1 simulated minute; ~33 min in all)
 echo   connector   %KAFKA_PKG%
 echo.
 
@@ -159,13 +165,16 @@ echo        topic init done.
 
 REM Reset BEFORE any consumer attaches: deleting a topic that a running query is
 REM subscribed to can fault the query on a vanished topic.
-echo [3/5] Resetting the topic to a clean slate...
+echo [3/6] Resetting the topic to a clean slate...
 "%VENV_PY%" -m src.stream.producer --reset-only
 if errorlevel 1 goto :fail
 
 if exist "%READY%" del "%READY%"
+REM A snapshot from the previous run would show on the page until the first batch
+REM of this one lands (the consumer's --fresh clears it too).
+if exist "%STATE%" del "%STATE%"
 
-echo [4/5] Launching the Spark consumer in a new window...
+echo [4/6] Launching the Spark consumer in a new window...
 start "Taxi demand - SPARK STREAM (consumer)" cmd /k ""%SPARK_SUBMIT%" --packages %KAFKA_PKG% src\stream\spark_stream.py --fresh --run-seconds %STREAM_SECONDS% --ready-file %READY% --validate"
 
 echo        waiting for the query to start (first run downloads the connector)...
@@ -183,20 +192,36 @@ goto :waitready
 :streamready
 echo        consumer is running - safe to produce.
 
-echo [5/5] Launching the producer in a new window...
+echo [5/6] Launching the producer in a new window...
 start "Taxi demand - KAFKA PRODUCER" cmd /k ""%VENV_PY%" -m src.stream.producer --start "%DEMO_START%" --hours %DEMO_HOURS% --speedup %SPEEDUP% --append"
+
+echo [6/6] Serving the live page at http://127.0.0.1:%PORT%/stream.html ...
+REM Reuse a server already on the port (run_gui.bat serves the same folder);
+REM otherwise start one, minimised, bound to 127.0.0.1 only. It outlives this
+REM script on purpose: the page keeps the final verdict until the window is closed.
+netstat -an | find ":%PORT% " | find "LISTENING" >nul
+if errorlevel 1 (
+    start "Taxi demand - LIVE PAGE (http.server)" /min "%VENV_PY%" -m http.server %PORT% --bind 127.0.0.1 --directory gui
+    ping -n 3 127.0.0.1 >nul 2>&1
+) else (
+    echo        port %PORT% is already serving - reusing it ^(run_gui.bat?^)
+)
+start "" "http://127.0.0.1:%PORT%/stream.html"
 
 echo.
 echo ============================================================================
-echo  Demo running in two windows.
+echo  Demo running in two windows + the live page.
 echo ============================================================================
 echo   PRODUCER  emits trips paced by their own event time.
 echo   STREAM    prints each closed (zone, window) cell with predicted vs actual,
 echo             then validates streamed totals against demand.parquet and stops
 echo             after %STREAM_SECONDS%s.
+echo   PAGE      http://127.0.0.1:%PORT%/stream.html - choropleth, feed and tiles
+echo             refresh from %STATE% every 2 s; the verdict appears at the end.
+echo             Close the minimised "LIVE PAGE" window to stop serving.
 echo.
 echo   With a 2-hour watermark the last ~2 simulated hours never close, so a
-echo   %DEMO_HOURS%-hour replay yields ~%DEMO_HOURS% minus 3 closed windows.
+echo   %DEMO_HOURS%-hour replay yields about %DEMO_HOURS% minus 2 closed windows.
 echo   Output lands in data\processed\stream_predictions\.
 echo.
 echo   Single-query forecaster (same artifacts, instant, weather/events-aware):

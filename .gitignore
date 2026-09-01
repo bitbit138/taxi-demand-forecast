@@ -24,6 +24,7 @@ derby.log
 _SUCCESS
 checkpoint/
 **/_checkpoints/
+**/_checkpoints_live/
 
 # --- Python -----------------------------------------------------------------
 __pycache__/
@@ -37,6 +38,7 @@ env/
 
 # --- Runtime markers --------------------------------------------------------
 .stream_ready
+gui/stream_state.json
 
 # --- Editors / OS -----------------------------------------------------------
 .vscode/
@@ -50,3 +52,4 @@ desktop.ini
 
 # --- Local working notes, not part of the submission ------------------------
 QA_PREP.md
+.venv-*/

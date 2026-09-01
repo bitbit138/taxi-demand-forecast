@@ -6,10 +6,15 @@ then executed with the project's ``.venv`` interpreter (``.venv\\Scripts\\python
 on Windows, ``.venv/bin/python`` elsewhere — override with ``VENV_PY=<path>`` or
 ``--python``).
 
+    python run.py                     # no arguments: SET UP (create .venv with the
+                                      #   right Python, install requirements, find
+                                      #   Java, start Docker) then START the console
+                                      #   and the streaming demo
     python run.py pipeline            # steps 1-7, then sweep K and stop for review
     python run.py pipeline k 5        # commit to K=5: train, evaluate, ablation, maps, ...
     python run.py pipeline smoke      # 3-month sample, K pinned to 4 (sequencing check)
     python run.py demo                # Kafka + Spark Structured Streaming, two windows
+                                      #   + the live page on http://127.0.0.1:8765/stream.html
     python run.py gui                 # rebuild gui/payload.json, then serve on :8765
     python run.py gui serve           # serve the committed payload, no rebuild
     python run.py gui build           # rebuild only
@@ -29,10 +34,13 @@ can be opened.
 from __future__ import annotations
 
 import argparse
+import glob
+import hashlib
 import os
 import platform
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -47,11 +55,17 @@ IS_MACOS = platform.system() == "Darwin"
 # --- demo constants (identical to run_demo.bat) -------------------------------
 READY_FILE = ROOT / ".stream_ready"
 READY_TIMEOUT = 180
-SPEEDUP = 600
-DEMO_START = "2024-01-10 14:00:00"
-DEMO_HOURS = 6
-STREAM_SECONDS = 420
+# 60x: 1 real second = 1 simulated minute, so a window closes about once a
+# minute and a 32-hour replay (a whole day plus the 2 h the watermark holds back)
+# runs ~32 minutes — long enough to talk over, with the morning and evening
+# rushes both crossing the map.
+SPEEDUP = 60
+DEMO_START = "2024-01-10 06:00:00"
+DEMO_HOURS = 32
+STREAM_SECONDS = DEMO_HOURS * 3600 // SPEEDUP + 60   # replay time + a minute's margin
 GUI_PORT = 8765
+STREAM_STATE = ROOT / "gui" / "stream_state.json"   # rewritten by the consumer per batch
+STREAM_PAGE = "stream.html"
 
 DRY_RUN = False
 
@@ -70,31 +84,117 @@ def fail(message: str, code: int = 1) -> "NoReturn":  # noqa: F821
     sys.exit(code)
 
 
-def venv_python(override: str | None) -> str:
-    """The project's interpreter, by full path — never whatever ``python`` is on PATH."""
-    candidate = override or os.environ.get("VENV_PY")
-    if not candidate:
-        candidate = str(
-            ROOT / ".venv" / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
-        )
-    if Path(candidate).exists():
-        return candidate
+def find_python311() -> str | None:
+    """A CPython 3.11 to create .venv with — the newest Python PySpark 3.5 supports."""
+    if sys.version_info[:2] == (3, 11):
+        return sys.executable
+    if IS_WINDOWS:
+        try:
+            out = subprocess.run(["py", "-3.11", "-c", "import sys; print(sys.executable)"],
+                                 capture_output=True, text=True, check=False)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except FileNotFoundError:
+            pass
+        return None
+    for candidate in (shutil.which("python3.11"),
+                      "/opt/homebrew/bin/python3.11",   # Homebrew, Apple silicon
+                      "/usr/local/bin/python3.11",      # Homebrew, Intel
+                      "/usr/bin/python3.11"):
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def ensure_requirements(py: str) -> None:
+    """Install requirements.txt into .venv, once per change to the file (a hash
+    stamp inside .venv makes every later start cost one file read)."""
+    req = ROOT / "requirements.txt"
+    stamp = ROOT / ".venv" / ".requirements.stamp"
+    digest = hashlib.sha256(req.read_bytes()).hexdigest()
+    if stamp.exists() and stamp.read_text().strip() == digest:
+        return
+    print("\n[setup] installing requirements into .venv (first time takes a few minutes)...")
     if DRY_RUN:
-        print(f"  (dry-run) venv interpreter not found at {candidate}; showing commands anyway")
-        return candidate
-    create = (
-        "py -3.11 -m venv .venv && .venv\\Scripts\\activate && pip install -r requirements.txt"
-        if IS_WINDOWS
-        else "python3.11 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
-    )
-    fail(f".venv not found at {candidate}. Create it first:\n    {create}\n"
-         "  or point VENV_PY / --python at an existing interpreter.")
+        return
+    if subprocess.run([py, "-m", "pip", "install", "-r", str(req)], cwd=ROOT).returncode != 0:
+        fail("pip install -r requirements.txt failed — read the pip output above.")
+    stamp.write_text(digest)
+
+
+def venv_python(override: str | None) -> str:
+    """The project's interpreter, by full path — CREATED on the spot when missing.
+
+    ``--python``/``VENV_PY`` overrides are honoured verbatim. Otherwise, if .venv
+    lacks this platform's interpreter (fresh clone, or a venv carried over from
+    the other OS — this repo moves between Windows and macOS), it is built with
+    Python 3.11 and requirements are installed, so any command starts from
+    nothing with no manual setup on either OS.
+    """
+    candidate = override or os.environ.get("VENV_PY")
+    if candidate:
+        if Path(candidate).exists() or DRY_RUN:
+            return candidate
+        fail(f"interpreter not found at {candidate} (from --python / VENV_PY).")
+
+    expected = ROOT / ".venv" / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
+    if not expected.exists():
+        venv_dir = ROOT / ".venv"
+        if venv_dir.exists():
+            # No interpreter for THIS platform => it is the other OS's venv.
+            # Set it aside rather than delete it.
+            bak, n = ROOT / ".venv-foreign-bak", 1
+            while bak.exists():
+                n += 1
+                bak = ROOT / f".venv-foreign-bak{n}"
+            print(f"[setup] .venv has no {platform.system()} interpreter — moving it to {bak.name}/")
+            if not DRY_RUN:
+                venv_dir.rename(bak)
+        py311 = find_python311()
+        if py311 is None:
+            install = ("winget install -e --id Python.Python.3.11" if IS_WINDOWS
+                       else "brew install python@3.11")
+            fail("Python 3.11 not found (PySpark 3.5.3 supports up to 3.11). Install it:\n"
+                 f"    {install}\n  then re-run this script.")
+        print(f"[setup] creating .venv with {py311} ...")
+        if not DRY_RUN and subprocess.run([py311, "-m", "venv", str(venv_dir)],
+                                          cwd=ROOT).returncode != 0:
+            fail("could not create .venv — read the output above.")
+    if Path(expected).exists() or not DRY_RUN:
+        ensure_requirements(str(expected))
+    return str(expected)
 
 
 def require_java_home() -> str:
     java_home = os.environ.get("JAVA_HOME", "").strip()
     if java_home:
         return java_home
+    if IS_MACOS:
+        # Unset is the normal state on a Mac: ask the system for a JDK 17, then try
+        # the Homebrew keg, so the demo is one command here too.
+        try:
+            found = subprocess.run(["/usr/libexec/java_home", "-v", "17"],
+                                   capture_output=True, text=True, check=False)
+            if found.returncode == 0 and found.stdout.strip():
+                os.environ["JAVA_HOME"] = found.stdout.strip()
+                return os.environ["JAVA_HOME"]
+        except FileNotFoundError:
+            pass
+        brew = "/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+        if Path(brew, "bin", "java").exists():
+            os.environ["JAVA_HOME"] = brew
+            return brew
+    if IS_WINDOWS:
+        # Same one-command promise on Windows: pick up a JDK 17 from the usual
+        # vendors' default install locations.
+        for pattern in (r"C:\Program Files\Eclipse Adoptium\jdk-17*",
+                        r"C:\Program Files\Microsoft\jdk-17*",
+                        r"C:\Program Files\Java\jdk-17*",
+                        r"C:\Program Files\Amazon Corretto\jdk17*"):
+            hits = sorted(glob.glob(pattern))
+            if hits and Path(hits[-1], "bin", "java.exe").exists():
+                os.environ["JAVA_HOME"] = hits[-1]
+                return hits[-1]
     if DRY_RUN:
         return "<unset>"
     hint = (
@@ -176,6 +276,56 @@ def docker_inspect(container: str, template: str) -> str:
         return out.stdout.strip() if out.returncode == 0 else ""
     except FileNotFoundError:
         fail("docker is not installed or not on PATH.")
+
+
+def docker_daemon_up() -> bool:
+    return subprocess.run(["docker", "info"], capture_output=True, check=False).returncode == 0
+
+
+def ensure_docker_running() -> None:
+    """Docker installed AND its daemon answering — start Docker Desktop if not."""
+    if shutil.which("docker") is None:
+        fail("docker is not installed or not on PATH. Install Docker Desktop:\n"
+             "    https://www.docker.com/products/docker-desktop/")
+    if DRY_RUN or docker_daemon_up():
+        return
+    print("       Docker daemon not running - starting Docker Desktop...")
+    if IS_MACOS:
+        subprocess.run(["open", "-g", "-a", "Docker"], check=False)
+    elif IS_WINDOWS:
+        exe = Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
+        if exe.exists():
+            subprocess.Popen([str(exe)])
+        else:
+            fail("Docker Desktop not found at its default path - start it by hand, then re-run.")
+    wait_until("Docker daemon", docker_daemon_up, 180,
+               "Start Docker Desktop by hand, then re-run.")
+
+
+def port_in_use(port: int) -> bool:
+    """True when something already listens on 127.0.0.1:port (e.g. ``run.py gui``)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def serve_gui(port: int) -> "subprocess.Popen | None":
+    """Start ``http.server`` on gui/ in the background, or reuse a server already there.
+
+    Returns the child process, or None when the port was already taken (then the
+    caller just opens the browser against whatever is serving). Request logging
+    goes to /dev/null: the live page polls every two seconds, and that would
+    otherwise bury the launcher's own output.
+    """
+    if port_in_use(port):
+        print(f"       port {port} is already serving - reusing it (run.py gui?)")
+        return None
+    # --bind 127.0.0.1: a presentation tool has no business on the room's network.
+    return subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1",
+         "--directory", str(ROOT / "gui")],
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def wait_until(description: str, predicate, timeout: int, hint: str) -> None:
@@ -295,7 +445,8 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
     banner("Kafka + Spark streaming demo")
     print(f"  replay      {DEMO_START}  for {DEMO_HOURS} simulated hours")
-    print(f"  speedup     {SPEEDUP}x  (1 real second = 10 simulated minutes)")
+    print(f"  speedup     {SPEEDUP}x  (1 real second = 1 simulated minute; "
+          f"~{STREAM_SECONDS // 60} min in all)")
     print(f"  python      {py}")
     print(f"  JAVA_HOME   {java_home}")
 
@@ -323,6 +474,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
     print("\n[1/5] Starting Kafka...")
     if not DRY_RUN:
+        ensure_docker_running()
         if subprocess.run(["docker", "compose", "up", "-d"], cwd=ROOT).returncode != 0:
             fail("docker compose failed. Is Docker Desktop running?")
 
@@ -340,12 +492,16 @@ def cmd_demo(args: argparse.Namespace) -> None:
         print("       topic init done.")
 
     # Reset BEFORE any consumer attaches: deleting a subscribed topic faults the query.
-    run_step("3/5 reset the topic to a clean slate",
+    run_step("3/6 reset the topic to a clean slate",
              [py, "-m", "src.stream.producer", "--reset-only"], env)
     if READY_FILE.exists():
         READY_FILE.unlink()
+    # A snapshot left by the previous run would show on the page until the first
+    # batch of this one lands (the consumer's --fresh clears it too).
+    if STREAM_STATE.exists():
+        STREAM_STATE.unlink()
 
-    print("\n[4/5] Launching the Spark consumer in a new window...")
+    print("\n[4/6] Launching the Spark consumer in a new window...")
     open_in_terminal(
         "Taxi demand - SPARK STREAM (consumer)",
         [py, "-m", "src.stream.spark_stream", "--fresh",
@@ -359,7 +515,7 @@ def cmd_demo(args: argparse.Namespace) -> None:
                    "Read the consumer window for the error.")
         print("       consumer is running - safe to produce.")
 
-    print("\n[5/5] Launching the producer in a new window...")
+    print("\n[5/6] Launching the producer in a new window...")
     open_in_terminal(
         "Taxi demand - KAFKA PRODUCER",
         [py, "-m", "src.stream.producer", "--start", DEMO_START,
@@ -367,14 +523,39 @@ def cmd_demo(args: argparse.Namespace) -> None:
         env, exports,
     )
 
-    banner("Demo running in two windows")
+    url = f"http://127.0.0.1:{args.port}/{STREAM_PAGE}"
+    print(f"\n[6/6] Serving the live page at {url}")
+    server = None
+    if DRY_RUN:
+        print(f"   $ {sys.executable} -m http.server {args.port} --bind 127.0.0.1 --directory gui")
+    else:
+        server = serve_gui(args.port)
+        if server is not None:
+            wait_until("live page server", lambda: port_in_use(args.port), 15,
+                       "http.server did not come up.")
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    banner("Demo running in two windows + the live page")
     print("  PRODUCER  emits trips paced by their own event time.")
     print("  STREAM    prints each closed (zone, window) cell with predicted vs actual,")
     print(f"            validates against demand.parquet, and stops after {STREAM_SECONDS}s.")
+    print(f"  PAGE      {url} - the choropleth, feed and tiles refresh")
+    print("            from gui/stream_state.json every 2 s; the verdict appears at the end.")
     print("  With a 2-hour watermark the last ~2 simulated hours never close.")
     print("\n  Single-query forecaster (instant, weather/events-aware):")
     print(f'    {py} -m src.stream.predict_live --zone 161 --at "2024-11-28 15:00"')
     print(f'    {py} -m src.stream.predict_live --zone 79 --at "2024-01-13 01:00" --precip 5')
+
+    if server is None:
+        return
+    # Keep serving so the page (and its final verdict) stays up after the consumer
+    # finishes; the demo is over when the presenter says so.
+    print("\n  Leave this window open while presenting; press Ctrl+C to stop the page server.")
+    try:
+        server.wait()
+    except KeyboardInterrupt:
+        server.terminate()
+        print("\nstopped.")
 
 
 # --------------------------------------------------------------------------- #
@@ -422,6 +603,43 @@ def cmd_gui(args: argparse.Namespace) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# start — the no-argument default: set up, then start everything
+# --------------------------------------------------------------------------- #
+def cmd_start(args: argparse.Namespace) -> None:
+    banner("START - set up, then console + streaming demo")
+    py = venv_python(args.python)   # creates .venv + installs requirements if needed
+
+    run_step("1/3 export the model into gui/payload.json",
+             [py, "-m", "src.viz.build_gui"], dict(os.environ))
+
+    url = f"http://127.0.0.1:{args.port}/"
+    print(f"\n[2/3] Serving the console at {url}")
+    server = serve_gui(args.port)
+    if not DRY_RUN:
+        if server is not None:
+            wait_until("console server", lambda: port_in_use(args.port), 15,
+                       "http.server did not come up.")
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    print("\n[3/3] Streaming demo (Kafka + Spark)...")
+    try:
+        cmd_demo(args)   # reuses the server above and opens the live stream page
+    except SystemExit:
+        print("\nThe streaming demo could not start — the reason and its fix are")
+        print(f"printed above. The console stays up at {url}")
+        print("Fixed it? Run:  python run.py demo")
+
+    if server is None or DRY_RUN:
+        return
+    print("\n  Press Ctrl+C here to stop the console server when you are done.")
+    try:
+        server.wait()
+    except KeyboardInterrupt:
+        server.terminate()
+        print("\nstopped.")
+
+
+# --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> None:
     global DRY_RUN
     parser = argparse.ArgumentParser(
@@ -436,13 +654,21 @@ def main(argv: list[str] | None = None) -> None:
     common.add_argument("--python", help="interpreter to use instead of .venv's")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    s = sub.add_parser("start", parents=[common],
+                       help="set up (.venv, deps, Java, Docker) and start console + demo "
+                            "— what plain `python run.py` does")
+    s.add_argument("--port", type=int, default=GUI_PORT)
+    s.set_defaults(func=cmd_start)
+
     p = sub.add_parser("pipeline", parents=[common],
                        help="batch pipeline: sweep | smoke | k <N>")
     p.add_argument("mode", nargs="*")
     p.set_defaults(func=cmd_pipeline)
 
     d = sub.add_parser("demo", parents=[common],
-                       help="Kafka + Spark Structured Streaming demo")
+                       help="Kafka + Spark Structured Streaming demo + live page")
+    d.add_argument("--port", type=int, default=GUI_PORT,
+                   help="port for the live page (default %(default)s)")
     d.set_defaults(func=cmd_demo)
 
     g = sub.add_parser("gui", parents=[common],
@@ -451,6 +677,10 @@ def main(argv: list[str] | None = None) -> None:
     g.add_argument("--port", type=int, default=GUI_PORT)
     g.set_defaults(func=cmd_gui)
 
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        argv = ["start"]   # zero-argument run: set up and start everything
     args = parser.parse_args(argv)
     DRY_RUN = args.dry_run
     os.chdir(ROOT)

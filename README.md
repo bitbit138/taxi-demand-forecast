@@ -232,11 +232,11 @@ weekly curves, the scaling curve and the top association rules.
 # --- terminal 1: reset the topic, then start the consumer -------------------
 python -m src.stream.producer --reset-only
 spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3 `
-  src\stream\spark_stream.py --fresh --run-seconds 420 --validate
+  src\stream\spark_stream.py --fresh --run-seconds 1980 --validate
 
 # --- terminal 2: once the consumer prints "query started" -------------------
-python -m src.stream.producer --start "2024-01-10 14:00:00" --hours 6 `
-  --speedup 600 --append
+python -m src.stream.producer --start "2024-01-10 06:00:00" --hours 32 `
+  --speedup 60 --append
 ```
 
 Order matters twice. Reset the topic **before** the consumer attaches — deleting a topic
@@ -256,11 +256,39 @@ and a `--validate` mismatch) — nondeterministically, depending on where the br
 reintroduce it. If the broker was created before that line existed, `docker compose
 up -d` recreates it with the new setting.
 
+**Pacing.** The launchers replay 32 simulated hours from 06:00 at 60× (1 real second
+= 1 simulated minute), so an hour closes about once a minute and the run lasts ~33
+minutes — a whole day's morning and evening rushes cross the map, and the 2-hour
+watermark holds back only the last two hours. The producer sustains this at ~110
+msg/s, far below its ceiling.
+
+**Live page.** Both launchers also serve `gui/` on `http://127.0.0.1:8765` and open
+`stream.html` once the consumer is ready. The page is a browser view of the same run:
+the choropleth shows the **current hour filling in** (provisional counts climbing every
+micro-batch) or, at a click, the latest **closed** window's final pickups, with the
+forecast and error per zone on hover; click a zone to follow it through the day. Tiles
+give the event-time watermark, the measured replay speed, trips ingested with a rate
+sparkline, windows closed/open, cells scored, running MAE and WAPE; a city-wide
+actual-vs-predicted curve draws itself hour by hour; a log lists every micro-batch that
+closed a window; a feed lists every final cell; and when the consumer stops, the
+`--validate` verdict appears with the streamed and batch totals.
+
+The validated stream is unchanged. The `foreachBatch` sink additionally rewrites one
+JSON snapshot, `gui/stream_state.json` (atomic replace, after the parquet write); the
+filling-window view comes from a **second, update-mode query** on the same topic with
+its own checkpoint (`_checkpoints_live/`) that writes only to that snapshot and is never
+persisted or validated (`--no-live` drops it); and the main loop adds query progress
+(watermark, input rows, rate). The page polls the file every 2 s over the same
+`http.server` the model console uses — no websockets, no extra process, no new
+dependency. Until the consumer starts the page says it is waiting. By hand, serve
+`gui/` yourself (`python -m http.server 8765 --bind 127.0.0.1 --directory gui`) and
+open `/stream.html`; `--state-file ''` on the consumer turns the snapshot off.
+
 `spark-submit` takes the **file path** `src\stream\spark_stream.py`, not the module name.
 The equivalent module form works too and resolves the connector from `config.py`:
 
 ```powershell
-python -m src.stream.spark_stream --fresh --run-seconds 420 --validate
+python -m src.stream.spark_stream --fresh --run-seconds 1980 --validate
 ```
 
 Single query against the same model:
@@ -306,8 +334,9 @@ docker exec -it taxi-kafka /opt/kafka/bin/kafka-console-producer.sh --bootstrap-
 | 16 | `python -m src.stream.predict_live` | single live query -> predicted demand (shape + conditions models) |
 | 17 | `python -m src.viz.make_maps` | Folium maps (clusters + error analysis), GeoJSON, plots |
 | 18 | `run_gui.bat` | local web console — exports `gui/payload.json` then serves `gui/` on `http://localhost:8765` |
+| 19 | `run_demo.bat` / `python run.py demo` | steps 1, 14 and 15 sequenced, plus the live page `gui/stream.html` fed by `gui/stream_state.json` (rewritten per micro-batch) |
 
-> All 18 steps are implemented; the write-up is [REPORT.md](REPORT.md).
+> All 19 steps are implemented; the write-up is [REPORT.md](REPORT.md).
 
 ---
 
